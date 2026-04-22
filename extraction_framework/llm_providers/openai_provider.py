@@ -10,6 +10,14 @@ try:
 except ImportError:
     OPENAI_AVAILABLE = False
 
+try:
+    from ecologits import EcoLogits
+    # Initialize EcoLogits for OpenAI-compatible providers with Italian electricity mix
+    EcoLogits.init(providers=["openai"], electricity_mix_zone="ITA")
+    ECOLOGITS_AVAILABLE = True
+except ImportError:
+    ECOLOGITS_AVAILABLE = False
+
 
 class OpenAIProvider(BaseLLMProvider):
     """Generic OpenAI-compatible provider for configured endpoints"""
@@ -55,13 +63,28 @@ class OpenAIProvider(BaseLLMProvider):
         return content
 
     def _extract_tokens(self, response) -> dict:
-        """Extract token usage from response"""
+        """Extract token usage and sustainability data from response"""
         usage = response.usage if hasattr(response, 'usage') else None
-        return {
+        token_usage = {
             'input': usage.prompt_tokens if usage else 0,
             'output': usage.completion_tokens if usage else 0,
             'total': usage.total_tokens if usage else 0
         }
+        
+        # Extract EcoLogits impacts if available
+        if ECOLOGITS_AVAILABLE and hasattr(response, 'impacts'):
+            try:
+                impacts = response.impacts
+                # EcoLogits returns a RangeValue with mean, low, high. We use mean.
+                token_usage.update({
+                    'energy_kwh': impacts.energy.value.mean,  # kWh (mean estimate)
+                    'co2_kg': impacts.gwp.value.mean,        # kgCO2eq (mean estimate)
+                    'energy_source': 'ecologits'
+                })
+            except Exception as e:
+                print(f"Warning: Failed to extract EcoLogits data: {e}")
+                
+        return token_usage
 
     def extract_structured_data(
         self, 
@@ -89,10 +112,20 @@ class OpenAIProvider(BaseLLMProvider):
         if system_prompt is None:
             # Use schema docstring and add strict JSON instructions
             schema_json = json.dumps(schema.model_json_schema(), indent=2)
+            
+            # Extract main class name to be explicit
+            class_name = schema.__name__
+            
             system_prompt = (
-                f"{schema.__doc__ or 'Extract structured data.'}\n"
-                f"You MUST return ONLY a valid JSON object matching this schema:\n{schema_json}\n"
-                "Do not include any preamble, explanation, or markdown code blocks like ```json."
+                f"Sei un agente specializzato nell'estrazione di dati. {schema.__doc__ or 'Estrai dati strutturati.'}\n\n"
+                f"Il tuo compito è estrarre le informazioni dal documento fornito e restituirle come un oggetto JSON valido che segua lo schema riportato di seguito.\n"
+                f"CRITICO: NON restituire la definizione dello schema stesso. Estrai i valori REALI dal testo e popola i campi.\n\n"
+                f"Schema di output ({class_name}):\n{schema_json}\n\n"
+                "Vincoli:\n"
+                "- Restituisci SOLO l'oggetto JSON popolato.\n"
+                "- Nessun preambolo, nessuna spiegazione, nessun blocco di codice markdown (es. ```json).\n"
+                "- Se un campo non viene trovato nel testo, usa null.\n"
+                "- Se lo schema definisce una lista, estrai TUTTI gli elementi trovati nel documento."
             )
         
         # Build content
@@ -125,7 +158,7 @@ class OpenAIProvider(BaseLLMProvider):
         
         # Qwen specific overrides
         if "qwen" in model_lower:
-            params["temperature"] = 0.1  # Very low for extraction
+            params["temperature"] = 0  # Very low for extraction
 
         
         # Use regular chat completion

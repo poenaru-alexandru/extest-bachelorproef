@@ -13,6 +13,12 @@ from extraction_framework.llm_providers import get_provider
 from extraction_framework.scoring import ResultScorer, ExtractionResult
 from extraction_framework.page_validator import PageValidator, load_validation_rules_from_model
 
+try:
+    from codecarbon import EmissionsTracker
+    CODECARBON_AVAILABLE = True
+except ImportError:
+    CODECARBON_AVAILABLE = False
+
 
 class TestRunner:
     """Run extraction tests with various configurations"""
@@ -195,10 +201,42 @@ class TestRunner:
             print(f"Extracting structured data using {llm_provider} ({llm_model or 'default'})...")
             provider = get_provider(llm_provider, llm_model, llm_api_key)
             
-            extracted, token_usage = provider.extract_structured_data(
-                text=text,
-                schema=extraction_model
-            )
+            # Sustainability tracking for local runs
+            emissions_data = {}
+            if CODECARBON_AVAILABLE and llm_provider.lower() == "local":
+                print(f"[Sustainability] Starting local emissions tracking...")
+                tracker = EmissionsTracker(
+                    project_name=f"ExTest_{llm_model}",
+                    measure_power_secs=1,
+                    save_to_file=False,
+                    logging_level="error",
+                    country_iso_code="ITA"
+                )
+                tracker.start()
+                try:
+                    extracted, token_usage = provider.extract_structured_data(
+                        text=text,
+                        schema=extraction_model
+                    )
+                finally:
+                    tracker.stop()
+                    # Capture accurate energy metrics from final_emissions_data
+                    if hasattr(tracker, 'final_emissions_data') and tracker.final_emissions_data:
+                        data = tracker.final_emissions_data
+                        emissions_data = {
+                            'energy_kwh': data.energy_consumed,
+                            'co2_kg': data.emissions,
+                            'cpu_energy_kwh': data.cpu_energy,
+                            'gpu_energy_kwh': data.gpu_energy,
+                            'ram_energy_kwh': data.ram_energy,
+                            'energy_source': 'codecarbon'
+                        }
+                        print(f"[Sustainability] Local Energy: {emissions_data['energy_kwh']:.6f} kWh | CO2: {emissions_data['co2_kg']:.6f} kg")
+            else:
+                extracted, token_usage = provider.extract_structured_data(
+                    text=text,
+                    schema=extraction_model
+                )
             
             # ====== STEP 5: CLEANUP ======
             # Remove temp filtered PDF if created
@@ -222,7 +260,15 @@ class TestRunner:
                 "timestamp": datetime.now().isoformat(),
                 "input_tokens": token_usage.get('input', 0),
                 "output_tokens": token_usage.get('output', 0),
-                "total_tokens": token_usage.get('total', 0)
+                "total_tokens": token_usage.get('total', 0),
+                
+                # Sustainability Metrics
+                "energy_kwh": emissions_data.get('energy_kwh') or token_usage.get('energy_kwh'),
+                "co2_kg": emissions_data.get('co2_kg') or token_usage.get('co2_kg'),
+                "cpu_energy_kwh": emissions_data.get('cpu_energy_kwh'),
+                "gpu_energy_kwh": emissions_data.get('gpu_energy_kwh'),
+                "ram_energy_kwh": emissions_data.get('ram_energy_kwh'),
+                "energy_source": emissions_data.get('energy_source') or token_usage.get('energy_source')
             }
             
             if page_filter_stats:

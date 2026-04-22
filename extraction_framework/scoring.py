@@ -31,6 +31,14 @@ class ExtractionResult(BaseModel):
     output_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     page_filter_stats: Optional[Dict[str, Any]] = None
+    
+    # Sustainability Metrics
+    energy_kwh: Optional[float] = None
+    co2_kg: Optional[float] = None
+    cpu_energy_kwh: Optional[float] = None
+    gpu_energy_kwh: Optional[float] = None
+    ram_energy_kwh: Optional[float] = None
+    energy_source: Optional[str] = None  # 'codecarbon' or 'ecologits'
 
 
 class ComparisonResult(BaseModel):

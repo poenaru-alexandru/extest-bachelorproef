@@ -17,3 +17,5 @@ flask-cors>=4.0.0
 # Utilities
 python-dotenv>=1.0.0
 tqdm>=4.65.0
+codecarbon>=2.3.0
+ecologits>=0.3.0

@@ -1,3 +1,7 @@
-# Scoring rules for gas bills
+# Configurazione delle regole di scoring per bollette gas
+
+# Campi da usare per identificare righe analoghe tra diversi risultati
 UNIQUE_IDENTIFIERS = ['codice', 'giorno_inizio', 'giorno_fine']
-IGNORED_FIELDS = {'timestamp', 'indirizzo'}
+
+# Campi da ignorare nel conteggio dei punti
+IGNORED_FIELDS = {'timestamp', 'indirizzo', 'consumo_annuale'}

@@ -1,3 +1,3 @@
-# Scoring rules for fuel invoices
-UNIQUE_IDENTIFIERS = ['codice', 'giorno_inizio']
-IGNORED_FIELDS = {'timestamp'}
+# Configurazione scoring carburante
+UNIQUE_IDENTIFIERS = ['codice', 'giorno_inizio', 'tipologia']
+IGNORED_FIELDS = {'timestamp', 'um'}
