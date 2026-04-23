@@ -102,64 +102,52 @@ def get_document_files():
 
 @app.route('/api/run-test', methods=['POST'])
 def run_test():
-    """Run extraction test with detailed logging"""
+    """Run extraction test(s) with optimized batching for local models"""
     import traceback
     
     try:
         data = request.json
         print(f"\n{'='*60}")
-        print(f"[API] Received test request")
-        print(f"[API] PDF: {data.get('pdf_file')}")
-        print(f"[API] Extractor: {data.get('extractor')}")
-        print(f"[API] Provider: {data.get('llm_provider')}")
-        print(f"[API] Model: {data.get('llm_model')}")
+        print(f"[API] Received extraction request")
         
-        pdf_file = Path(data['pdf_file'])
-        extractor = data['extractor']
-        provider = data['llm_provider']
-        model = data.get('llm_model')
-        model_file = data.get('model_file', 'modello.py')
+        # Normalize inputs to lists for batch processing
+        pdf_paths = data.get('pdf_files', [data.get('pdf_file')])
+        pdf_files = [Path(p) for p in pdf_paths if p]
         
-        # Load extraction model and scoring rules
-        test_folder = pdf_file.parent.name
-        print(f"[API] Loading model from test folder: {test_folder}")
-        extraction_model = model_loader.get_model_for_test(test_folder, model_file)
-        extraction_model_module = model_loader.get_module_for_test(test_folder, model_file)
-        print(f"[API] Model loaded: {extraction_model.__name__ if extraction_model else 'None'}")
+        extractors = data.get('extractors', [data.get('extractor')])
         
-        # Load scoring rules for this test folder
-        print(f"[API] Loading scoring rules for: {test_folder}")
-        runner.set_scoring_rules_for_test(test_folder)
+        # Handle single or multiple model configs
+        if 'llm_configs' in data:
+            llm_configs = data['llm_configs']
+        else:
+            llm_configs = [{
+                "provider": data.get('llm_provider'),
+                "model": data.get('llm_model')
+            }]
+            
+        print(f"[API] Batch size: {len(pdf_files)} files, {len(extractors)} extractors, {len(llm_configs)} models")
         
-        # Run extraction (API key from environment variables)
-        print(f"[API] Starting extraction...")
-        result = runner.run_extraction(
-            pdf_path=pdf_file,
-            extractor_name=extractor,
-            llm_provider=provider,
-            llm_model=model,
-            extraction_model=extraction_model,
-            extraction_model_module=extraction_model_module
+        # Run test suite (handles Model-Document batching internally for local)
+        all_results_dict = runner.run_test_suite(
+            pdf_files=pdf_files,
+            extractors=extractors,
+            llm_configs=llm_configs
         )
         
-        print(f"[API] Extraction completed. Success: {result.success}")
-        if result.extracted_data:
-            print(f"[API] Data extracted: {len(str(result.extracted_data))} chars")
-        if result.error:
-            print(f"[API] Error: {result.error}")
+        # Flatten results for response
+        flat_results = []
+        for pdf_path_str, results in all_results_dict.items():
+            for res in results:
+                flat_results.append(res.model_dump())
         
-        # Save result to disk for comparison feature
-        try:
-            saved_path = runner.scorer.save_result(result)
-            print(f"[API] Result saved to: {saved_path}")
-        except Exception as save_error:
-            print(f"[API] Warning: Failed to save result: {save_error}")
-        
+        print(f"[API] Suite completed. Total results: {len(flat_results)}")
         print(f"{'='*60}\n")
         
-        # Convert to dict and ensure JSON serializable
-        response_data = result.model_dump()
-        return jsonify(response_data)
+        # If it was a single test request, return just the first result for compatibility
+        if len(flat_results) == 1 and 'pdf_file' in data:
+            return jsonify(flat_results[0])
+            
+        return jsonify({"results": flat_results, "success": True})
         
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -168,12 +156,8 @@ def run_test():
         return jsonify({
             "error": str(e),
             "traceback": error_trace,
-            "success": False,
-            "extractor_name": data.get('extractor', 'unknown'),
-            "llm_provider": data.get('llm_provider', 'unknown'),
-            "llm_model": data.get('llm_model', 'unknown'),
-            "extraction_time": 0
-        }), 200  # Return 200 to avoid parse errors
+            "success": False
+        }), 500
 
 
 @app.route('/api/pdf/<test_folder>/<pdf_name>')

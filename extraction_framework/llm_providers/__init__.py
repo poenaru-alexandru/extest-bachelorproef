@@ -2,8 +2,10 @@
 from typing import Dict, List, Optional, Any
 from .base_provider import BaseLLMProvider
 from .openai_provider import OpenAIProvider
+from .llama_cpp_provider import LlamaCppProvider
 import os
 import json
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -116,7 +118,18 @@ def get_provider(
         models = provider_config.get("models", [])
         model = models[0] if models else None
     
-    # Both NVIDIA and local endpoints are OpenAI-compatible.
+    # Return LlamaCppProvider for local models
+    if provider_name_lower == "local":
+        # Resolve absolute path to model
+        # Base dir is the project root (BP/)
+        base_dir = Path(__file__).parent.parent.parent.parent
+        model_path = base_dir / "local_models" / (model if model.endswith(".gguf") else f"{model}.gguf")
+        
+        return LlamaCppProvider(
+            model_path=str(model_path)
+        )
+    
+    # Cloud endpoints (NVIDIA, HuggingFace, etc.) are OpenAI-compatible.
     return OpenAIProvider(
         model=model or provider_config["models"][0],
         api_key=api_key,

@@ -85,17 +85,6 @@ class DatiBollettaEE(BaseModel):
     - NON inventare dati. Se un valore non è presente, usa null.
     """
     
-    PAGE_VALIDATION_RULES: ClassVar[List[Dict]] = [
-        {
-            "description": "Pagina con consumi e POD",
-            "patterns": [r"(?i)(POD|kWh|CONSUMO|F1|F2|F3)"]
-        },
-        {
-            "description": "Pagina con storico consumi",
-            "patterns": [r"(?i)(STORICO|ULTIMI\s+12\s+MESI|RIEPILOGO\s+CONSUMI)"]
-        }
-    ]
-    
     consumi: List[PeriodoConsumoEE] = Field(
         ...,
         description="Lista completa di tutti i periodi di consumo (correnti e storici) trovati nel documento."
