@@ -15,7 +15,7 @@ class PeriodoConsumoEE(BaseModel):
     consumo: float = Field(
         ...,
         title="Consumo Totale (kWh)",
-        description="Consumo totale di energia elettrica in kWh per il periodo indicato."
+        description="Consumo totale in kWh. FORMATO: Il documento usa la virgola per i decimali e il punto per le migliaia. Rimuovi il punto delle migliaia e sostituisci la virgola con il punto per restituire un numero float valido (es. 1.234,56 -> 1234.56)."
     )
     indirizzo: str = Field(
         ...,
@@ -25,17 +25,17 @@ class PeriodoConsumoEE(BaseModel):
     consumo_f1: Optional[float] = Field(
         None,
         title="Consumo F1 (kWh)",
-        description="Consumo in fascia F1. Usare null se non specificato."
+        description="Consumo in fascia F1. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     consumo_f2: Optional[float] = Field(
         None,
         title="Consumo F2 (kWh)",
-        description="Consumo in fascia F2. Usare null se non specificato."
+        description="Consumo in fascia F2. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     consumo_f3: Optional[float] = Field(
         None,
         title="Consumo F3 (kWh)",
-        description="Consumo in fascia F3. Usare null se non specificato."
+        description="Consumo in fascia F3. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     giorno_fine: str = Field(
         ...,
@@ -45,7 +45,7 @@ class PeriodoConsumoEE(BaseModel):
     costo_periodo: Optional[float] = Field(
         None,
         title="Costo Periodo (€)",
-        description="Importo totale fatturato per questo specifico periodo, se presente."
+        description="Importo totale fatturato per questo periodo. FORMATO: Il documento usa la virgola per i decimali e il punto per le migliaia. Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     giorno_inizio: str = Field(
         ...,
@@ -68,24 +68,14 @@ class PeriodoConsumoEE(BaseModel):
 
 
 class DatiBollettaEE(BaseModel):
-    """
-    SEI UN AGENTE SPECIALIZZATO NELL'ESTRAZIONE DATI DA BOLLETTE ELETTRICHE.
-    
-    Il tuo obiettivo è estrarre OGNI SINGOLO periodo di consumo presente nel documento.
-    Generalmente, una bolletta contiene:
-    1. Un periodo principale (quello fatturato correntemente).
-    2. Una tabella dello "Storico Consumi" o "Consumi ultimi 12 mesi" con molti altri periodi mensili.
-    
-    DEVI ESTRARRE TUTTI I PERIODI TROVATI, inclusi quelli nella tabella dello storico.
-    Dovresti ottenere circa 12-13 oggetti nel campo 'consumi'.
-    
-    REGOLE MANDATORIE:
-    - Estrai TUTTI i periodi di consumo (POD, date, kWh).
-    - Se mancano date o consumo, scarta quel periodo.
-    - NON inventare dati. Se un valore non è presente, usa null.
-    """
+    """Contenitore per l'estrazione di tutti i periodi di consumo elettrico (correnti e storici)."""
     
     consumi: List[PeriodoConsumoEE] = Field(
         ...,
-        description="Lista completa di tutti i periodi di consumo (correnti e storici) trovati nel documento."
+        description=(
+            "Lista completa di tutti i periodi di consumo (correnti e storici) trovati nel documento. "
+            "Estrai OGNI SINGOLO periodo, inclusa la tabella dello 'Storico Consumi' (solitamente 12-13 mensilità). "
+            "CRITICO: Devi estrarre TUTTI gli elementi presenti nel documento. Devi restituire un array con MOLTEPLICI oggetti. "
+            "L'array non deve MAI contenere un solo elemento se sono presenti più voci (come tabelle storiche o liste) nel testo."
+        )
     )

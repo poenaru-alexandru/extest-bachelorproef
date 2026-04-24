@@ -4,4 +4,4 @@
 UNIQUE_IDENTIFIERS = ['codice', 'giorno_inizio', 'tipologia']
 
 # Campi da ignorare nel conteggio dei punti
-IGNORED_FIELDS = {'timestamp', 'um'}
+IGNORED_FIELDS = {}

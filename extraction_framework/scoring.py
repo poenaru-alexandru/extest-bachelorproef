@@ -17,12 +17,18 @@ class FieldScore(BaseModel):
 
 
 class ExtractionResult(BaseModel):
-    """Single extraction result"""
+    """Single extraction result with streaming telemetry"""
     pdf_file: str
     extractor_name: str
     llm_provider: str
     llm_model: str
-    extraction_time: float
+    extraction_time: float  # Total wall-clock time
+    
+    # Streaming Telemetry
+    ttft_seconds: Optional[float] = None
+    generation_seconds: Optional[float] = None
+    total_inference_seconds: Optional[float] = None
+    
     success: bool
     error: Optional[str] = None
     extracted_data: Optional[Dict[str, Any]] = None

@@ -10,12 +10,14 @@ from dotenv import load_dotenv
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Initialize global colorized print override
+import extraction_framework.console
+
 from extraction_framework.test_runner import TestRunner
 from extraction_framework.model_loader import ModelLoader
 from extraction_framework.ground_truth import GroundTruthManager
-from extraction_framework.extractors import get_all_extractors, get_extractor_by_name
+from extraction_framework.extractors import get_all_extractors
 from extraction_framework.llm_providers import get_available_providers
-from extraction_framework.page_validator import PageValidator, load_validation_rules_from_model
 from extraction_framework.scoring import ExtractionResult
 
 # Load environment
@@ -605,259 +607,34 @@ def save_ground_truth_api(test_folder, pdf_name):
         return jsonify({"error": str(e), "success": False}), 500
 
 
-@app.route('/api/test-regex', methods=['POST'])
-def test_regex():
-    """Test regex patterns on a PDF"""
-    import traceback
+@app.route('/api/inspect-pages', methods=['POST'])
+def inspect_pages():
+    """Extract and return document content page-by-page for inspection"""
     try:
         data = request.json
-        print(f"\n{'='*60}")
-        print(f"[API] Testing regex patterns")
-        
         pdf_file = Path(data['pdf_file'])
-        test_folder = pdf_file.parent.name
-        extractor_name = data.get('extractor', 'PyMuPDF-XML')
+        extractor_name = data.get('extractor', 'Markdown-PyMuPDF')
         
-        print(f"[API] PDF: {pdf_file}")
-        print(f"[API] Test folder: {test_folder}")
-        print(f"[API] Extractor: {extractor_name}")
-        
-        # Load model module to get validation rules
-        extraction_model_module = model_loader.get_module_for_test(test_folder)
-        
-        from extraction_framework.page_validator import load_validation_rules_from_model, PageValidator
-        
-        # Get validation rules
-        validation_rules = load_validation_rules_from_model(extraction_model_module)
-        
-        if not validation_rules:
-            return jsonify({
-                "error": "No PAGE_VALIDATION_RULES found in model",
-                "rules": [],
-                "pages": []
-            }), 400
-        
-        # Extract pages from PDF
-        extractor = get_extractor_by_name(extractor_name)
+        # Extract pages from PDF using the selected extractor
+        extractor = MarkdownExtractor()
         pages = extractor.extract_pages(pdf_file)
-        
-        print(f"[API] Extracted {len(pages)} pages")
-        print(f"[API] Validation rules: {len(validation_rules)}")
-        
-        # Create validator and test each page
-        validator = PageValidator(validation_rules)
         
         page_results = []
         for i, page_text in enumerate(pages):
-            is_valid = validator.validate_page(page_text)
-            
-            # Find which rules matched
-            matched_rules = []
-            for rule_idx, rule in enumerate(validator.validation_rules):
-                all_match = all(
-                    pattern.search(page_text) is not None
-                    for pattern in rule['patterns']
-                )
-                if all_match:
-                    matched_rules.append({
-                        "index": rule_idx,
-                        "description": rule['description']
-                    })
-            
             page_results.append({
                 "page_number": i + 1,
-                "is_valid": is_valid,
-                "matched_rules": matched_rules,
-                "text_preview": page_text[:500] + "..." if len(page_text) > 500 else page_text,
-                "text_length": len(page_text)
+                "text_preview": page_text[:1000] + "..." if len(page_text) > 1000 else page_text,
+                "text_length": len(page_text),
+                "full_text": page_text
             })
-        
-        # Calculate filtering results
-        filtered_pages, filter_stats = validator.filter_pages(pages, verbose=False)
-        
-        response = {
-            "success": True,
-            "rules": [
-                {
-                    "index": i,
-                    "description": r.get('description', 'Unnamed rule'),
-                    "patterns": [str(p.pattern) for p in r['patterns']]
-                }
-                for i, r in enumerate(validator.validation_rules)
-            ],
-            "pages": page_results,
-            "filter_stats": filter_stats,
-            "total_pages": len(pages),
-            "valid_pages": sum(1 for p in page_results if p['is_valid']),
-            "filtered_pages": len(filtered_pages)
-        }
-        
-        print(f"[API] Valid pages: {response['valid_pages']}/{response['total_pages']}")
-        print(f"[API] Pages after filtering: {response['filtered_pages']}")
-        print(f"{'='*60}\n")
-        
-        return jsonify(response)
-        
-    except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"[API] ERROR: {e}")
-        print(f"[API] Traceback:\n{error_trace}")
-        return jsonify({"error": str(e), "traceback": error_trace}), 500
-
-
-@app.route('/api/test-regex-batch', methods=['POST'])
-def test_regex_batch():
-    """Test regex validation on ALL PDFs in ALL test folders"""
-    try:
-        import fitz  # PyMuPDF
-        
-        data = request.get_json()
-        
-        print(f"\n{'='*60}")
-        print(f"[API] Batch Regex Test")
-        print(f"{'='*60}")
-        
-        # Get all test folders
-        test_folders = [d for d in TEST_DIR.iterdir() if d.is_dir()]
-        
-        all_results = []
-        total_pages_before = 0
-        total_pages_after = 0
-        total_pages_removed = 0
-        
-        for test_folder in test_folders:
-            folder_name = test_folder.name
-            print(f"\n[Folder] {folder_name}")
             
-            # Check if modello.py exists
-            model_file = test_folder / "modello.py"
-            if not model_file.exists():
-                print(f"  ⚠️  No modello.py found, skipping")
-                continue
-            
-            # Load validation rules
-            try:
-                # Load the model module dynamically
-                import importlib.util
-                spec = importlib.util.spec_from_file_location(f"modello_{folder_name}", model_file)
-                model_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(model_module)
-                
-                validation_rules = load_validation_rules_from_model(model_module)
-                if not validation_rules:
-                    print(f"  ⚠️  No PAGE_VALIDATION_RULES found")
-                    continue
-                
-                validator = PageValidator(validation_rules)
-                print(f"  ✓ Loaded {len(validation_rules)} validation rules")
-            except Exception as e:
-                print(f"  ❌ Error loading rules: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-            
-            # Get all PDFs in this folder (case-insensitive on Windows)
-            pdf_files = list(set(test_folder.glob("*.pdf")) | set(test_folder.glob("*.PDF")))
-            print(f"  Found {len(pdf_files)} PDFs")
-            
-            for pdf_path in pdf_files:
-                pdf_name = pdf_path.name
-                print(f"    Testing: {pdf_name}")
-                
-                try:
-                    # Open PDF with PyMuPDF directly
-                    doc = fitz.open(str(pdf_path))
-                    total_pages = len(doc)
-                    
-                    # Validate each page
-                    pages_to_keep = []
-                    valid_pages = 0
-                    
-                    for page_num in range(total_pages):
-                        page = doc[page_num]
-                        page_text = page.get_text()
-                        
-                        if validator.validate_page(page_text):
-                            pages_to_keep.append(page_num)
-                            valid_pages += 1
-                    
-                    doc.close()
-                    
-                    # Calculate filtering stats (remove invalid from head/tail, keep middle)
-                    if pages_to_keep:
-                        first_valid = min(pages_to_keep)
-                        last_valid = max(pages_to_keep)
-                        filtered_pages = list(range(first_valid, last_valid + 1))
-                    else:
-                        filtered_pages = list(range(total_pages))
-                        first_valid = 0
-                        last_valid = total_pages - 1
-                    
-                    removed_head = first_valid
-                    removed_tail = total_pages - last_valid - 1
-                    
-                    filter_stats = {
-                        'total_pages': total_pages,
-                        'validated_pages': valid_pages,
-                        'filtered_pages': len(filtered_pages),
-                        'removed_from_head': removed_head,
-                        'removed_from_tail': removed_tail,
-                        'text_reduction_percent': ((total_pages - len(filtered_pages)) / total_pages * 100) if total_pages > 0 else 0
-                    }
-                    
-                    result = {
-                        'test_folder': folder_name,
-                        'pdf_file': pdf_name,
-                        'total_pages': total_pages,
-                        'valid_pages': valid_pages,
-                        'filter_stats': filter_stats
-                    }
-                    
-                    all_results.append(result)
-                    
-                    total_pages_before += total_pages
-                    total_pages_after += len(filtered_pages)
-                    total_pages_removed += removed_head + removed_tail
-                    
-                    print(f"      ✓ {len(filtered_pages)}/{total_pages} pages kept (-{filter_stats['text_reduction_percent']:.1f}%)")
-                    
-                except Exception as e:
-                    print(f"      ❌ Error: {e}")
-                    continue
-        
-        # Calculate summary statistics
-        total_pdfs = len(all_results)
-        avg_reduction = sum(r['filter_stats']['text_reduction_percent'] for r in all_results) / total_pdfs if total_pdfs > 0 else 0
-        avg_validation_rate = sum(r['valid_pages'] / r['total_pages'] * 100 for r in all_results) / total_pdfs if total_pdfs > 0 else 0
-        
-        summary = {
-            'total_pdfs': total_pdfs,
-            'total_pages_before': total_pages_before,
-            'total_pages_after': total_pages_after,
-            'total_pages_removed': total_pages_removed,
-            'avg_reduction_percent': avg_reduction,
-            'avg_validation_rate': avg_validation_rate
-        }
-        
-        print(f"\n{'='*60}")
-        print(f"[Summary]")
-        print(f"  Total PDFs: {total_pdfs}")
-        print(f"  Total pages: {total_pages_before} → {total_pages_after} (-{total_pages_removed})")
-        print(f"  Avg reduction: {avg_reduction:.1f}%")
-        print(f"  Avg validation: {avg_validation_rate:.1f}%")
-        print(f"{'='*60}\n")
-        
         return jsonify({
-            'success': True,
-            'summary': summary,
-            'results': all_results
+            "success": True,
+            "pages": page_results,
+            "total_pages": len(pages)
         })
-        
     except Exception as e:
-        error_trace = traceback.format_exc()
-        print(f"[API] ERROR: {e}")
-        print(f"[API] Traceback:\n{error_trace}")
-        return jsonify({"error": str(e), "traceback": error_trace}), 500
+        return jsonify({"error": str(e), "success": False}), 500
 
 
 if __name__ == '__main__':

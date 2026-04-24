@@ -318,7 +318,7 @@
             <button class="tab" onclick="showTab('results')">📊 Results</button>
             <button class="tab" onclick="showTab('comparison')">🔍 Dashboard</button>
             <button class="tab" onclick="showTab('validation')">✅ GT Comparison</button>
-            <button class="tab" onclick="showTab('regex-test')">🔬 Regex Test</button>
+            <button class="tab" onclick="showTab('inspection')">📖 Doc Inspection</button>
         </div>
         
         <!-- Configuration Tab -->
@@ -414,33 +414,21 @@
             </div>
         </div>
         
-        <!-- Regex Test Tab -->
-        <div id="regex-test" class="tab-content">
-            <h2>🔬 Regex Validation Test</h2>
-            <p style="color: #666; margin-bottom: 20px;">Test regex validation patterns on all PDFs in test folders</p>
+        <!-- Inspection Tab -->
+        <div id="inspection" class="tab-content">
+            <h2>📖 Document Inspection</h2>
+            <p style="color: #666; margin-bottom: 20px;">Inspect extraction pages logic: extract and view document content page-by-page.</p>
             
             <div class="form-group">
-                <label>Extractor</label>
-                <select id="regexExtractor">
-                    <option value="PyMuPDF-XML">PyMuPDF-XML</option>
-                </select>
+                <label>Select Extractor for Inspection</label>
+                <select id="inspectionExtractor"></select>
             </div>
             
-            <button onclick="testRegexOnAllPdfs()" style="background: #28a745; margin-bottom: 20px;">🚀 Test All PDFs</button>
+            <button onclick="inspectDocument()" style="background: #28a745; margin-bottom: 20px;">🔍 Extract Pages</button>
             
-            <div id="regexProgress" style="display: none; background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;">
-                <div style="margin-bottom: 10px;">
-                    <strong>Progress:</strong> <span id="regexProgressText">Loading...</span>
-                </div>
-                <div style="width: 100%; background: #ddd; border-radius: 5px; height: 20px; overflow: hidden;">
-                    <div id="regexProgressBar" style="width: 0%; background: #667eea; height: 100%; transition: width 0.3s;"></div>
-                </div>
-            </div>
-            
-            <div id="regexAllResults" style="display: none;">
-                <h3>📊 Global Results - All PDFs</h3>
-                <div id="regexSummary" style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px;"></div>
-                <div id="regexAllPdfsList"></div>
+            <div id="inspectionResults" style="display: none;">
+                <h3 id="inspectionTitle">Extracted Pages</h3>
+                <div id="pagesContainer" style="margin-top: 20px;"></div>
             </div>
         </div>
     </div>
@@ -540,6 +528,16 @@
                 } else {
                     debugLog('⚠️ No providers found in config', 'warning');
                 }
+                
+                // Populate inspection extractors
+                const inspectionExtractor = document.getElementById('inspectionExtractor');
+                inspectionExtractor.innerHTML = '';
+                config.extractors.forEach(ext => {
+                    const option = document.createElement('option');
+                    option.value = ext;
+                    option.textContent = ext;
+                    inspectionExtractor.appendChild(option);
+                });
                 
                 updateModels();
                 await loadPdfFiles();
@@ -1113,120 +1111,66 @@
                     JSON.stringify(result.extracted_data, null, 2);
             }
         }
-        
-        // ========== REGEX TEST FUNCTIONS ==========
-        async function testRegexOnAllPdfs() {
-            const extractor = document.getElementById('regexExtractor').value;
-            
-            if (!extractor) {
-                alert('Select an extractor!');
+
+        async function inspectDocument() {
+            const pdfSelect = document.getElementById('pdfSelect');
+            const pdfFile = pdfSelect.value;
+            const extractor = document.getElementById('inspectionExtractor').value;
+
+            if (!pdfFile) {
+                alert('Please select a document first in the Configuration tab.');
+                showTab('config');
                 return;
             }
-            
-            // Hide previous results
-            document.getElementById('regexAllResults').style.display = 'none';
-            
-            // Show progress
-            const progressDiv = document.getElementById('regexProgress');
-            progressDiv.style.display = 'block';
-            document.getElementById('regexProgressText').textContent = 'Loading...';
-            document.getElementById('regexProgressBar').style.width = '0%';
-            
+
+            const container = document.getElementById('pagesContainer');
+            const resultsDiv = document.getElementById('inspectionResults');
+            const title = document.getElementById('inspectionTitle');
+
+            resultsDiv.style.display = 'block';
+            title.textContent = `Extracting pages using ${extractor}...`;
+            container.innerHTML = '<div class="loading"><div class="spinner"></div>Extracting pages...</div>';
+
             try {
-                const response = await fetch('/api/test-regex-batch', {
+                const response = await fetch('/api/inspect-pages', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
-                        extractor_type: extractor
+                        pdf_file: pdfFile,
+                        extractor: extractor
                     })
                 });
-                
-                const result = await response.json();
-                
-                progressDiv.style.display = 'none';
-                
-                if (result.error) {
-                    alert('Error: ' + result.error);
-                    return;
+
+                const data = await response.json();
+
+                if (data.success) {
+                    title.textContent = `Extracted ${data.total_pages} pages from ${pdfFile.split(/[\\\/]/).pop()}`;
+                    container.innerHTML = '';
+                    
+                    data.pages.forEach(page => {
+                        const pageDiv = document.createElement('div');
+                        pageDiv.style.marginBottom = '20px';
+                        pageDiv.style.border = '1px solid #ddd';
+                        pageDiv.style.borderRadius = '4px';
+                        pageDiv.style.overflow = 'hidden';
+
+                        pageDiv.innerHTML = `
+                            <div style="background: #f8f9fa; padding: 10px; border-bottom: 1px solid #ddd; font-weight: bold; display: flex; justify-content: space-between;">
+                                <span>Page ${page.page_number}</span>
+                                <span style="font-weight: normal; color: #666;">${page.text_length} characters</span>
+                            </div>
+                            <div class="json-viewer" style="max-height: 400px; padding: 15px;">
+                                <pre style="white-space: pre-wrap; word-break: break-all;">${page.full_text}</pre>
+                            </div>
+                        `;
+                        container.appendChild(pageDiv);
+                    });
+                } else {
+                    container.innerHTML = `<div class="result-card error">Error: ${data.error}</div>`;
                 }
-                
-                displayBatchRegexResults(result);
             } catch (error) {
-                progressDiv.style.display = 'none';
-                alert('Error in batch test: ' + error.message);
+                container.innerHTML = `<div class="result-card error">Fatal Error: ${error.message}</div>`;
             }
-        }
-        
-        function displayBatchRegexResults(result) {
-            document.getElementById('regexAllResults').style.display = 'block';
-            
-            const summary = result.summary;
-            const summaryHtml = `
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #667eea; font-weight: bold;">${summary.total_pdfs}</div>
-                        <div style="color: #666;">PDFs Tested</div>
-                    </div>
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #667eea; font-weight: bold;">${summary.total_pages_before}</div>
-                        <div style="color: #666;">Total Pages (Before)</div>
-                    </div>
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #28a745; font-weight: bold;">${summary.total_pages_after}</div>
-                        <div style="color: #666;">Total Pages (After)</div>
-                    </div>
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #dc3545; font-weight: bold;">${summary.total_pages_removed}</div>
-                        <div style="color: #666;">Pages Removed</div>
-                    </div>
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #ff6b6b; font-weight: bold;">${summary.avg_reduction_percent.toFixed(1)}%</div>
-                        <div style="color: #666;">Avg Reduction (%)</div>
-                    </div>
-                    <div style="background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                        <div style="font-size: 24px; color: #28a745; font-weight: bold;">${summary.avg_validation_rate.toFixed(1)}%</div>
-                        <div style="color: #666;">Avg Validation (%)</div>
-                    </div>
-                </div>
-            `;
-            document.getElementById('regexSummary').innerHTML = summaryHtml;
-            
-            // Display results per PDF
-            let pdfListHtml = '<h4 style="margin-top: 20px;">Detail per PDF</h4><table style="width: 100%; border-collapse: collapse; margin-top: 10px;">';
-            pdfListHtml += `
-                <thead>
-                    <tr style="background: #667eea; color: white;">
-                        <th style="padding: 10px; text-align: left;">Folder</th>
-                        <th style="padding: 10px; text-align: left;">PDF</th>
-                        <th style="padding: 10px; text-align: center;">Pages (Before)</th>
-                        <th style="padding: 10px; text-align: center;">Pages (After)</th>
-                        <th style="padding: 10px; text-align: center;">Removed</th>
-                        <th style="padding: 10px; text-align: center;">Reduction %</th>
-                        <th style="padding: 10px; text-align: center;">Validation %</th>
-                    </tr>
-                </thead>
-                <tbody>
-            `;
-            
-            result.results.forEach((r, idx) => {
-                const bgColor = idx % 2 === 0 ? '#f8f9fa' : 'white';
-                const stats = r.filter_stats;
-                const validationRate = (r.valid_pages / r.total_pages * 100).toFixed(1);
-                pdfListHtml += `
-                    <tr style="background: ${bgColor};">
-                        <td style="padding: 10px;">${r.test_folder}</td>
-                        <td style="padding: 10px;">${r.pdf_file}</td>
-                        <td style="padding: 10px; text-align: center;">${stats.total_pages}</td>
-                        <td style="padding: 10px; text-align: center;">${stats.filtered_pages}</td>
-                        <td style="padding: 10px; text-align: center; color: #dc3545; font-weight: bold;">${stats.removed_from_head + stats.removed_from_tail}</td>
-                        <td style="padding: 10px; text-align: center; color: #ff6b6b; font-weight: bold;">${stats.text_reduction_percent.toFixed(1)}%</td>
-                        <td style="padding: 10px; text-align: center; color: ${validationRate >= 70 ? '#28a745' : '#ffc107'}; font-weight: bold;">${validationRate}%</td>
-                    </tr>
-                `;
-            });
-            
-            pdfListHtml += '</tbody></table>';
-            document.getElementById('regexAllPdfsList').innerHTML = pdfListHtml;
         }
         
         function showTab(tabName) {

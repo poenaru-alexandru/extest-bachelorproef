@@ -8,10 +8,13 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from extraction_framework.extractors import get_all_extractors, get_extractor_by_name
+# Initialize global colorized print override
+import extraction_framework.console
+
+from extraction_framework.extractors import get_all_extractors
+from extraction_framework.extractors.markdown_extractor import MarkdownExtractor
 from extraction_framework.llm_providers import get_provider
 from extraction_framework.scoring import ResultScorer, ExtractionResult
-from extraction_framework.page_validator import PageValidator, load_validation_rules_from_model
 import logging
 
 try:
@@ -19,6 +22,13 @@ try:
     CODECARBON_AVAILABLE = True
 except ImportError:
     CODECARBON_AVAILABLE = False
+
+try:
+    from ecologits import EcoLogits
+    EcoLogits.init(providers=["huggingface_hub"], electricity_mix_zone="ITA")
+    ECOLOGITS_AVAILABLE = True
+except ImportError:
+    ECOLOGITS_AVAILABLE = False
 
 
 class TestRunner:
@@ -130,8 +140,6 @@ class TestRunner:
         if extractors is None:
             extractors = [e.name for e in get_all_extractors()]
         
-        if llm_configs is None:
-            llm_configs = [{"provider": "local", "model": "llama3.1:8b"}]
             
         all_results = {str(pdf): [] for pdf in pdf_files}
         
@@ -232,101 +240,105 @@ class TestRunner:
         extraction_model_module = None
     ) -> ExtractionResult:
         """Internal helper to run extraction using a pre-instantiated provider"""
-        # This is a refactored version of run_extraction that accepts a provider object
-        # to avoid the get_provider call which triggers model reloading
         start_time = time.time()
         llm_provider = provider.name
         llm_model = provider.model
         
         try:
-            # Re-use the core logic from run_extraction
-            # (In a real refactoring, run_extraction would call this method)
-            
-            # Get extractor
-            extractor = get_extractor_by_name(extractor_name)
+            # 1. Get designated extractor (Standardized on Markdown for scientific rigor)
+            extractor = MarkdownExtractor()
+
             if hasattr(extractor, 'set_extraction_model'):
                 extractor.set_extraction_model(extraction_model)
             
-            # Pre-filtering (copied from run_extraction)
-            filtered_pdf_path = pdf_path
-            page_filter_stats = None
-            if extraction_model_module:
-                validation_rules = load_validation_rules_from_model(extraction_model_module)
-                if validation_rules:
-                    validator = PageValidator(validation_rules)
-                    import fitz
-                    doc = fitz.open(pdf_path)
-                    pages_to_keep = []
-                    for page_num in range(len(doc)):
-                        if validator.validate_page(doc[page_num].get_text()):
-                            pages_to_keep.append(page_num)
-                    doc.close()
-                    if pages_to_keep:
-                        first, last = min(pages_to_keep), max(pages_to_keep)
-                        filtered_range = list(range(first, last + 1))
-                        if len(filtered_range) < len(doc):
-                            import tempfile
-                            temp_pdf = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
-                            temp_pdf.close()
-                            filtered_pdf_path = Path(temp_pdf.name)
-                            doc = fitz.open(pdf_path)
-                            filtered_doc = fitz.open()
-                            for p in filtered_range:
-                                filtered_doc.insert_pdf(doc, from_page=p, to_page=p)
-                            filtered_doc.save(filtered_pdf_path)
-                            filtered_doc.close()
-                            doc.close()
-                            page_filter_stats = {'total_pages': len(doc), 'filtered_pages': len(filtered_range), 'total_removed': len(doc)-len(filtered_range)}
+            # 2. STANDARDIZED PAYLOAD EXTRACTION (Extract EXACTLY ONCE per document)
+            # This ensures all models receive the identical payload string for valid comparison.
+            document_text = extractor.extract_text(pdf_path)
 
-            # Word count check
-            import fitz
-            doc = fitz.open(filtered_pdf_path)
-            text = "".join([p.get_text() for p in doc])
-            doc.close()
-            if len(text.split()) <= 70:
-                raise ValueError("Document too small")
+            # 3. Word count check
+            word_count = len(document_text.split())
+            if word_count <= 70:
+                raise ValueError(f"Document too small for scientific comparison ({word_count} words)")
 
-            # Extraction
-            if extractor.name != "PDF-Direct":
-                text = extractor.extract_text(filtered_pdf_path)
-
-            # LLM Call (Using the provided provider)
+            # 4. LLM Inference & Emissions Tracking
             emissions_data = {}
             if CODECARBON_AVAILABLE and llm_provider.lower() == "local":
-                tracker = OfflineEmissionsTracker(project_name=f"ExTest_{llm_model}", measure_power_secs=1, save_to_file=False, logging_logger=logging.getLogger(__name__), country_iso_code="ITA")
+                tracker = OfflineEmissionsTracker(
+                    project_name=f"ExTest_{llm_model}", 
+                    measure_power_secs=1, 
+                    save_to_file=False, 
+                    logging_logger=logging.getLogger(__name__), 
+                    country_iso_code="ITA"
+                )
                 tracker.start()
                 try:
-                    extracted, token_usage = provider.extract_structured_data(text=text, schema=extraction_model)
+                    # Pass the identical document_text payload to local model
+                    extracted, token_usage = provider.extract_structured_data(text=document_text, schema=extraction_model)
                 finally:
                     tracker.stop()
                     if hasattr(tracker, 'final_emissions_data') and tracker.final_emissions_data:
                         d = tracker.final_emissions_data
-                        emissions_data = {'energy_kwh': d.energy_consumed, 'co2_kg': d.emissions, 'cpu_energy_kwh': d.cpu_energy, 'gpu_energy_kwh': d.gpu_energy, 'ram_energy_kwh': d.ram_energy, 'energy_source': 'codecarbon'}
+                        emissions_data = {
+                            'energy_kwh': d.energy_consumed, 
+                            'co2_kg': d.emissions, 
+                            'cpu_energy_kwh': d.cpu_energy, 
+                            'gpu_energy_kwh': d.gpu_energy, 
+                            'ram_energy_kwh': d.ram_energy, 
+                            'energy_source': 'codecarbon'
+                        }
             else:
-                extracted, token_usage = provider.extract_structured_data(text=text, schema=extraction_model)
+                # Pass identical document_text payload to cloud model (EcoLogits tracked inside)
+                extracted, token_usage = provider.extract_structured_data(text=document_text, schema=extraction_model)
 
-            # Cleanup
-            if filtered_pdf_path != pdf_path and filtered_pdf_path.exists():
-                filtered_pdf_path.unlink()
-
+            # 5. Finalization
             extraction_time = time.time() - start_time
             return ExtractionResult(
-                pdf_file=str(pdf_path), extractor_name=extractor_name, llm_provider=llm_provider, llm_model=llm_model,
-                extraction_time=extraction_time, success=True, extracted_data=extracted.model_dump(), timestamp=datetime.now().isoformat(),
-                input_tokens=token_usage.get('input', 0), output_tokens=token_usage.get('output', 0), total_tokens=token_usage.get('total', 0),
+                pdf_file=str(pdf_path), 
+                extractor_name=extractor.name, 
+                llm_provider=llm_provider, 
+                llm_model=llm_model,
+                extraction_time=extraction_time,
+                
+                # Streaming Telemetry
+                ttft_seconds=token_usage.get('ttft_seconds'),
+                generation_seconds=token_usage.get('generation_seconds'),
+                total_inference_seconds=token_usage.get('total_inference_seconds'),
+                
+                success=True, 
+                extracted_data=extracted.model_dump(), 
+                timestamp=datetime.now().isoformat(),
+                input_tokens=token_usage.get('input', 0), 
+                output_tokens=token_usage.get('output', 0), 
+                total_tokens=token_usage.get('total', 0),
                 energy_kwh=emissions_data.get('energy_kwh') or token_usage.get('energy_kwh'),
                 co2_kg=emissions_data.get('co2_kg') or token_usage.get('co2_kg'),
-                cpu_energy_kwh=emissions_data.get('cpu_energy_kwh'), gpu_energy_kwh=emissions_data.get('gpu_energy_kwh'), ram_energy_kwh=emissions_data.get('ram_energy_kwh'),
+                cpu_energy_kwh=emissions_data.get('cpu_energy_kwh'), 
+                gpu_energy_kwh=emissions_data.get('gpu_energy_kwh'), 
+                ram_energy_kwh=emissions_data.get('ram_energy_kwh'),
                 energy_source=emissions_data.get('energy_source') or token_usage.get('energy_source'),
-                page_filter_stats=page_filter_stats
+                page_filter_stats=None
             )
         except Exception as e:
-            if filtered_pdf_path != pdf_path and filtered_pdf_path.exists():
-                filtered_pdf_path.unlink()
-            return ExtractionResult(pdf_file=str(pdf_path), extractor_name=extractor_name, llm_provider=llm_provider, llm_model=llm_model, extraction_time=time.time()-start_time, success=False, error=str(e), timestamp=datetime.now().isoformat())
+            return ExtractionResult(
+                pdf_file=str(pdf_path), 
+                extractor_name=extractor_name, 
+                llm_provider=llm_provider, 
+                llm_model=llm_model, 
+                extraction_time=time.time() - start_time, 
+                success=False, 
+                error=str(e), 
+                timestamp=datetime.now().isoformat()
+            )
 
 
 if __name__ == "__main__":
+    import os
+    import json
+    from dotenv import load_dotenv
+    
+    # Load environment variables
+    load_dotenv()
+    
     # Example usage
     runner = TestRunner()
     
@@ -340,15 +352,39 @@ if __name__ == "__main__":
     
     print(f"Found {len(pdf_files)} PDF files")
     
-    # Define LLM configurations
-    llm_configs = [
-        {"provider": "openai", "model": "gpt-4o", "api_key": None},
-        # Add more configurations as needed
-    ]
+    # Define LLM configurations dynamically from .env
+    env_config = os.getenv("LLM_PROVIDERS")
+    llm_configs = []
+    
+    if env_config:
+        try:
+            parsed_config = json.loads(env_config)
+            for provider_key, config_data in parsed_config.items():
+                if not isinstance(config_data, dict):
+                    continue
+                api_key = config_data.get("api_key")
+                base_url = config_data.get("base_url")
+                models = config_data.get("models", [])
+                
+                for model_name in models:
+                    llm_configs.append({
+                        "provider": provider_key,
+                        "model": model_name,
+                        "api_key": api_key,
+                        "base_url": base_url
+                    })
+        except json.JSONDecodeError as e:
+            print(f"Error parsing LLM_PROVIDERS JSON: {e}")
+            sys.exit(1)
+    else:
+        print("LLM_PROVIDERS environment variable not found. Please define it in your .env file.")
+        sys.exit(1)
+        
+    print(f"Loaded {len(llm_configs)} LLM configurations.")
     
     # Run tests
     results = runner.run_test_suite(
         pdf_files[:1],  # Test first PDF only for now
-        extractors=["PyMuPDF"],  # Test one extractor for now
+        extractors=["markdown"],  # Test one extractor for now
         llm_configs=llm_configs
     )

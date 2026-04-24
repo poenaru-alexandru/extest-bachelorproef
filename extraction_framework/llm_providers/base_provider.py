@@ -22,33 +22,12 @@ class BaseLLMProvider(ABC):
         """Extract structured data using the LLM
         
         Args:
-            text: Input text to extract from
+            text: Identical payload string for all models (standardized Markdown)
             schema: Pydantic model defining output structure
             system_prompt: Optional system prompt override
             
         Returns:
-            Tuple of (extracted data instance, token usage dict with 'input', 'output', 'total' keys)
-        """
-        pass
-    
-    def extract_text(self, prompt: str) -> tuple[str, Dict[str, int]]:
-        """Extract/filter text using the LLM (for preselection)
-        
-        Args:
-            prompt: Prompt including the text to filter
-            
-        Returns:
-            Tuple of (filtered text, token usage dict with 'input', 'output', 'total' keys)
-        """
-        # Default implementation - subclasses should override
-        raise NotImplementedError(f"{self.name} does not support text extraction")
-    
-    @abstractmethod
-    def supports_inline_files(self) -> bool:
-        """Whether this provider supports inline file uploads
-        
-        Returns:
-            True if files can be uploaded directly
+            Tuple of (extracted data instance, token usage dict)
         """
         pass
     

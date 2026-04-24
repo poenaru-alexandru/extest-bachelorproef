@@ -6,4 +6,4 @@ UNIQUE_IDENTIFIERS = ['codice', 'giorno_inizio', 'giorno_fine']
 
 # Campi da ignorare nel conteggio dei punten tijdens het vergelijken
 # Deze velden dragen niet bij aan de eindscore
-IGNORED_FIELDS = {'timestamp', 'indirizzo', 'consumo_annuale'}
+IGNORED_FIELDS = {'indirizzo'}

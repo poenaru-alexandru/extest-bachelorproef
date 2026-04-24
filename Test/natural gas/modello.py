@@ -13,7 +13,7 @@ class PeriodoConsumoGas(BaseModel):
     consumo: float = Field(
         ...,
         title="Consumo (Smc)",
-        description="Consumo totale espresso in Standard Metri Cubi (Smc)."
+        description="Consumo totale in Smc. FORMATO: Il documento usa la virgola per i decimali e il punto per le migliaia. Rimuovi il punto delle migliaia e usa il punto decimale."
     )
     indirizzo: str = Field(
         ...,
@@ -30,10 +30,10 @@ class PeriodoConsumoGas(BaseModel):
         title="Data Inizio Periodo",
         description="Data inizio in formato ISO yyyy-mm-dd"
     )
-    consumo_annuale: Optional[float] = Field(
+    costo_periodo: Optional[float] = Field(
         None,
-        title="Consumo Annuale (Smc)",
-        description="Riepilogo ultimi 12 mesi. Valorizzare SOLO per il periodo principale della bolletta corrente."
+        title="Costo Periodo (€)",
+        description="Importo totale fatturato per questo periodo. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
 
     @field_validator('giorno_inizio', 'giorno_fine')
@@ -50,27 +50,14 @@ class PeriodoConsumoGas(BaseModel):
 
 
 class DatiBollettaGas(BaseModel):
-    """
-    ESTRAI TUTTI I PERIODI DI CONSUMO GAS DALLA BOLLETTA FORNITA.
-    
-    In una bolletta del gas è fondamentale trovare sia il periodo correntemente fatturato che la tabella dello storico dei consumi (solitamente 12-13 righe con Smc e date).
-    
-    ISTRUZIONI:
-    1. Identifica il PDR (Punto di Riconsegna).
-    2. Cerca nel documento ogni riga che riporta un consumo in Smc e un intervallo di date.
-    3. Estrai OGNI occorrenza trovata nel campo 'consumi'.
-    4. consumo_annuale: inseriscilo SOLO per il record della bolletta corrente. Per lo storico deve essere null.
-    5. Se mancano date o consumo, scarta la riga.
-    """
-    
-    PAGE_VALIDATION_RULES: ClassVar[List[Dict]] = [
-        {
-            "description": "Pagina con PDR e consumi gas",
-            "patterns": [r"(?i)(PDR|GAS|SMC|METANO|CONSUMO)"]
-        }
-    ]
+    """Contenitore per l'estrazione di tutti i periodi di consumo gas (correnti e storici)."""
     
     consumi: List[PeriodoConsumoGas] = Field(
         ...,
-        description="Elenco di tutti i periodi di consumo gas estratti (correnti e storici)."
+        description=(
+            "Elenco di tutti i periodi di consumo gas estratti (correnti e storici). "
+            "Cerca ogni riga con consumo Smc e date, inclusa la tabella dello storico (solitamente 12-13 righe). "
+            "CRITICO: Devi estrarre TUTTI gli elementi presenti nel documento. Devi restituire un array con MOLTEPLICI oggetti. "
+            "L'array non deve MAI contenere un solo elemento se sono presenti più voci (come tabelle storiche o liste) nel testo."
+        )
     )

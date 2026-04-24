@@ -12,7 +12,7 @@ class PeriodoConsumoAcqua(BaseModel):
     consumo: float = Field(
         ...,
         title="Consumo Totale (m³)",
-        description="Consumo totale di acqua durante il periodo, espresso in metri cubi"
+        description="Consumo totale in m³. FORMATO: Il documento usa la virgola per i decimali e il punto per le migliaia. Rimuovi il punto delle migliaia e usa il punto decimale."
     )
     indirizzo: str = Field(
         ...,
@@ -27,12 +27,12 @@ class PeriodoConsumoAcqua(BaseModel):
     consumo_medio: float = Field(
         ...,
         title="Consumo Medio Giornaliero (m³/giorno)",
-        description="Consumo medio giornaliero nel periodo, in metri cubi per giorno"
+        description="Consumo medio giornaliero in m³/giorno. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     costo_periodo: Optional[float] = Field(
         None,
         title="Costo Periodo (€)",
-        description="Costo del periodo in Euro"
+        description="Costo del periodo in Euro. FORMATO: Rimuovi il punto delle migliaia e usa il punto per i decimali."
     )
     giorno_inizio: str = Field(
         ...,
@@ -54,29 +54,15 @@ class PeriodoConsumoAcqua(BaseModel):
 
 
 class DatiBollettaAcqua(BaseModel):
-    """
-    Estrai informazioni su ciascun periodo di consumo dalla bolletta dell'acqua in formato testuale.
-    Cerca di estrarre TUTTI i periodi, incluso lo storico dei consumi se presente.
-    
-    REGOLE DI ESTRAZIONE:
-    - Estrai solo dati di cui sei sicuro.
-    - Per campi obbligatori (date, codice, indirizzo, consumo, consumo_medio): se mancano, ometti l'intero periodo.
-    - Codice: usa numero di matricola del contatore; se non disponibile, usa codice contratto.
-    - Assicurati che le date siano in formato ISO yyyy-mm-dd.
-    """
-    
-    PAGE_VALIDATION_RULES: ClassVar[List[Dict]] = [
-        {
-            "description": "Pagina con dati consumo e contatore",
-            "patterns": [
-                r"(?:CONSUMO|LETTURA|CONTATORE|MATRICOLA)",
-                r"(?:m³|m3|mc|METRI\s+CUBI)",
-            ]
-        }
-    ]
+    """Contenitore per l'estrazione di tutti i periodi di consumo idrico (correnti e storici)."""
     
     consumi: List[PeriodoConsumoAcqua] = Field(
         ...,
         title="Elenco Periodi di Consumo",
-        description="Lista dei periodi di consumo idrico presenti nella bolletta (correnti e storici)."
+        description=(
+            "Lista dei periodi di consumo idrico presenti nella bolletta (correnti e storici). "
+            "Cerca di estrarre TUTTI i periodi identificabili nel documento. "
+            "CRITICO: Devi estrarre TUTTI gli elementi presenti nel documento. Devi restituire un array con MOLTEPLICI oggetti. "
+            "L'array non deve MAI contenere un solo elemento se sono presenti più voci (come tabelle storiche o liste) nel testo."
+        )
     )
