@@ -4,7 +4,7 @@ import time
 import re
 from typing import Optional, List, Any, Dict
 from pydantic import BaseModel
-from .base_provider import BaseLLMProvider
+from .base_provider import BaseLLMProvider, ExtractionError
 
 try:
     from huggingface_hub import InferenceClient
@@ -34,20 +34,8 @@ class HuggingFaceProvider(BaseLLMProvider):
             raise ImportError("huggingface_hub not installed. Install with: pip install huggingface_hub")
         
         kwargs = {"api_key": api_key}
-            
-        # Parse HuggingFace model string which might be "model_id" or "model_id:provider"
-        # For example "google/gemma-2-9b:fastest" or "meta-llama/Llama-3.1-8B-Instruct:novita"
-        # However, huggingface_hub also supports setting the provider in InferenceClient explicitly.
-        
-        # Keep the exact model string for the API calls as users specified it in .env
         self.model = model
-        
-        # For Gemma, we force provider="auto" in the InferenceClient
-        if "gemma" in self.model.lower():
-            kwargs["provider"] = "auto"
-            
         self.client = InferenceClient(**kwargs)
-            
     def extract_structured_data(
         self, 
         text: str, 
@@ -56,23 +44,36 @@ class HuggingFaceProvider(BaseLLMProvider):
     ) -> tuple[BaseModel, Dict[str, Any]]:
         """Extract structured data using Hugging Face InferenceClient"""
         
-        schema_json = json.dumps(schema.model_json_schema(), indent=2)
+        # Clean up the schema to avoid confusing the model
+        schema_dict = schema.model_json_schema()
+        schema_dict.pop('$schema', None)
+        schema_dict.pop('title', None)
+        schema_json = json.dumps(schema_dict, indent=2, ensure_ascii=False)
+        
         class_name = schema.__name__
         
-        # ONE STANDARD PROMPT - No fallbacks
-        standard_prompt = (
-            f"Sei un agente specializzato nell'estrazione di dati. {schema.__doc__ or 'Estrai dati strutturati.'}\n\n"
-            f"Il tuo compito è estrarre le informazioni dal documento fornito e restituirle come un oggetto JSON valido.\n"
-            f"Schema di output ({class_name}):\n{schema_json}\n\n"
-            "Vincoli:\n"
-            "- Restituisci SOLO l'oggetto JSON popolato.\n"
-            "- Nessun preambolo, nessuna spiegazione, nessun blocco di codice markdown.\n"
-            "- Se un campo non viene trovato, usa null."
-        )
+        if system_prompt is None:
+            system_prompt = (
+                f"Sei un assistente esperto nell'estrazione di dati. {schema.__doc__ or ''}\n\n"
+                "IL TUO COMPITO:\n"
+                "Estrai i dati dal testo fornito e inseriscili NELLA STRUTTURA JSON descritta qui sotto.\n"
+                "DEVI restituire un oggetto JSON popolato con i valori reali, NON la definizione dello schema.\n\n"
+                f"STRUTTURA JSON DA POPOLARE:\n{schema_json}\n\n"
+                "REGOLE MANDATORIE:\n"
+                "1. Usa ESATTAMENTE i nomi dei campi definiti sopra.\n"
+                "2. NON inventare nuovi nomi di campi.\n"
+                "3. Restituisci SOLO il JSON popolato con i dati.\n"
+                f"4. NON racchiudere il JSON in una chiave '{class_name}'.\n"
+                "5. Se un dato non è presente, usa null."
+            )
             
         messages = [
-            {"role": "system", "content": standard_prompt},
-            {"role": "user", "content": text}
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": (
+                f"Analizza il seguente testo ed estrai i dati seguendo la struttura richiesta.\n"
+                f"Ricorda: restituisci solo il JSON popolato, non lo schema.\n\n"
+                f"TESTO:\n{text}"
+            )}
         ]
         
         # --- EXECUTION ---
@@ -82,37 +83,53 @@ class HuggingFaceProvider(BaseLLMProvider):
         final_impacts = None
         
         try:
-            if "gemma" in self.model.lower():
-                # Gemma requires text_generation instead of chat.completions
-                combined_prompt = f"{standard_prompt}\n\nTesto da analizzare:\n{text}\n\nJSON Output:\n"
-                response = self.client.text_generation(
-                    combined_prompt,
-                    model=self.model,
-                    temperature=0
-                )
-                accumulated_content = response
-                ttft = time.time() - start_time
-            else:
-                response_stream = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages, 
-                    stream=True, 
-                    temperature=0,
-                    response_format={"type": "json_object"}
-                )
+            response_stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages, 
+                stream=True, 
+                temperature=0,
+                max_tokens=1500,
+                response_format={"type": "json_object"}
+            )
+            
+            for chunk in response_stream:
+                if ttft is None:
+                    ttft = time.time() - start_time
                 
-                for chunk in response_stream:
-                    if ttft is None:
-                        ttft = time.time() - start_time
+                choices = chunk.get("choices", []) if isinstance(chunk, dict) else getattr(chunk, "choices", [])
+                
+                if choices:
+                    choice = choices[0]
+                    delta = choice.get("delta", {}) if isinstance(choice, dict) else getattr(choice, "delta", None)
                     
-                    if chunk.choices and chunk.choices[0].delta.content:
-                        accumulated_content += chunk.choices[0].delta.content
-                        
-                    if hasattr(chunk, 'impacts') and chunk.impacts:
-                        final_impacts = chunk.impacts
+                    if delta:
+                        content = delta.get("content", "") if isinstance(delta, dict) else getattr(delta, "content", "")
+                        if content:
+                            accumulated_content += content
+                    
+                print(f"Received chunk: {chunk.impacts}")  # Debugging output
                         
         except Exception as stream_e:
-            raise ValueError(f"Failed during HF API call: {stream_e}. Accumulated so far: {accumulated_content[:200]}")
+            end_time = time.time()
+            total_time = end_time - start_time
+            gen_time = total_time - (ttft or 0)
+            input_chars = sum(len(m.get("content", "")) for m in messages)
+            output_chars = len(accumulated_content)
+            input_tokens = int(input_chars / 4)
+            output_tokens = int(output_chars / 4)
+            partial_usage = {
+                'ttft_seconds': ttft,
+                'generation_seconds': gen_time,
+                'total_inference_seconds': total_time,
+                'input': input_tokens,
+                'output': output_tokens,
+                'total': input_tokens + output_tokens
+            }
+            raise ExtractionError(
+                message=f"Failed during HF API call: {stream_e}.",
+                raw_content=accumulated_content,
+                token_usage=partial_usage
+            )
             
         end_time = time.time()
         total_time = end_time - start_time
@@ -153,6 +170,15 @@ class HuggingFaceProvider(BaseLLMProvider):
             
         try:
             parsed_json = json.loads(clean_json)
+            
+            # Fallback for models that wrap the output in the class name despite instructions
+            if class_name in parsed_json and len(parsed_json) == 1:
+                parsed_json = parsed_json[class_name]
+                
             return schema.model_validate(parsed_json), token_usage
         except Exception as e:
-            raise ValueError(f"Failed to parse LLM response as {schema.__name__}. Error: {e}. Raw content: {accumulated_content[:500]}...")
+            raise ExtractionError(
+                message=f"Failed to parse LLM response as {schema.__name__}. Error: {e}.",
+                raw_content=accumulated_content,
+                token_usage=token_usage
+            )

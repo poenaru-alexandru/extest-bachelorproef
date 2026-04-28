@@ -197,19 +197,27 @@ def get_comparison(pdf_path):
         
         for result_file in available_files:
             try:
-                # Check if this result file is for our PDF (match by stem)
+                # New format: {local|cloud}-{model}-{pdf_stem}-{timestamp}.json
+                # Old format: {pdf_stem}_{extractor}_{provider}_{timestamp}.json
+                
+                is_match = False
                 if result_file.name.startswith(pdf_stem):
-                    print(f"[API] Found matching file by stem: {result_file.name}")
+                    is_match = True
+                elif '-' in result_file.name:
+                    # Check if pdf_stem is in the middle of the new format
+                    parts = result_file.name.split('-')
+                    if pdf_stem in parts:
+                        is_match = True
+                
+                if is_match:
+                    print(f"[API] Found potential match: {result_file.name}")
                     with open(result_file, 'r', encoding='utf-8') as f:
                         result_data = json.load(f)
                         # Also verify the pdf_file field matches
                         result_pdf_name = result_data.get('pdf_file', '').split('\\')[-1].split('/')[-1]
-                        print(f"[API]   Result PDF name: {result_pdf_name}")
                         if result_pdf_name == pdf_name or Path(result_pdf_name).stem == pdf_stem:
                             results.append(result_data)
                             print(f"[API]   ✓ Loaded result from: {result_file.name}")
-                        else:
-                            print(f"[API]   ✗ PDF name mismatch: {result_pdf_name} != {pdf_name}")
             except Exception as e:
                 print(f"[API] Error loading result file {result_file}: {e}")
                 import traceback
@@ -603,36 +611,6 @@ def save_ground_truth_api(test_folder, pdf_name):
         )
         
         return jsonify({"success": True, "message": "Ground truth saved successfully"})
-    except Exception as e:
-        return jsonify({"error": str(e), "success": False}), 500
-
-
-@app.route('/api/inspect-pages', methods=['POST'])
-def inspect_pages():
-    """Extract and return document content page-by-page for inspection"""
-    try:
-        data = request.json
-        pdf_file = Path(data['pdf_file'])
-        extractor_name = data.get('extractor', 'Markdown-PyMuPDF')
-        
-        # Extract pages from PDF using the selected extractor
-        extractor = MarkdownExtractor()
-        pages = extractor.extract_pages(pdf_file)
-        
-        page_results = []
-        for i, page_text in enumerate(pages):
-            page_results.append({
-                "page_number": i + 1,
-                "text_preview": page_text[:1000] + "..." if len(page_text) > 1000 else page_text,
-                "text_length": len(page_text),
-                "full_text": page_text
-            })
-            
-        return jsonify({
-            "success": True,
-            "pages": page_results,
-            "total_pages": len(pages)
-        })
     except Exception as e:
         return jsonify({"error": str(e), "success": False}), 500
 

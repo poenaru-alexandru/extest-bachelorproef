@@ -36,7 +36,6 @@ class ExtractionResult(BaseModel):
     input_tokens: Optional[int] = None
     output_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
-    page_filter_stats: Optional[Dict[str, Any]] = None
     
     # Sustainability Metrics
     energy_kwh: Optional[float] = None
@@ -61,37 +60,28 @@ class ComparisonResult(BaseModel):
 class ResultScorer:
     """Score and compare extraction results"""
     
-    # Fields to ignore when calculating best extraction score
-    # These fields are typically metadata or less important for comparison
-    IGNORED_FIELDS = {
-        'timestamp',
-        'indirizzo',  # Often estimated/approximate
-        # Add more fields here as needed
-    }
-    
-    def __init__(self, results_dir: Path, ignored_fields: Optional[set] = None, unique_identifiers: Optional[List[str]] = None):
+    def __init__(self, results_dir: Path):
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
-        # Allow custom ignored fields, but default to class-level set
-        self.ignored_fields = ignored_fields if ignored_fields is not None else self.IGNORED_FIELDS.copy()
-        # Allow custom unique identifiers (default set in _get_unique_identifiers)
-        self.custom_unique_identifiers = unique_identifiers
     
     def save_result(self, result: ExtractionResult) -> Path:
-        """Save extraction result to file
-        
-        Args:
-            result: Extraction result to save
-            
-        Returns:
-            Path to saved file
-        """
-        # Create filename from parameters including model name
+        """Save extraction result to file"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         pdf_name = Path(result.pdf_file).stem
-        # Sanitize model name for filename (remove slashes and special chars)
-        model_safe = result.llm_model.replace('/', '_').replace('\\', '_').replace(':', '_') if result.llm_model else 'unknown'
-        filename = f"{pdf_name}_{result.extractor_name}_{result.llm_provider}_{model_safe}_{timestamp}.json"
+        
+        # Simplify model name
+        model_lower = result.llm_model.lower() if result.llm_model else 'unknown'
+        if 'llama' in model_lower:
+            model_short = 'llama'
+        elif 'mistral' in model_lower:
+            model_short = 'mistral'
+        elif 'gemma' in model_lower:
+            model_short = 'gemma'
+        else:
+            model_short = model_lower.replace('/', '_').replace('\\', '_').replace(':', '_')
+            
+        provider_type = 'local' if result.llm_provider.lower() == 'local' else 'cloud'
+        filename = f"{provider_type}-{model_short}-{pdf_name}-{timestamp}.json"
         
         filepath = self.results_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -100,18 +90,11 @@ class ResultScorer:
         return filepath
     
     def load_results_for_pdf(self, pdf_file: str) -> List[ExtractionResult]:
-        """Load all results for a specific PDF
-        
-        Args:
-            pdf_file: Path to PDF file
-            
-        Returns:
-            List of extraction results
-        """
+        """Load all results for a specific PDF"""
         pdf_name = Path(pdf_file).stem
         results = []
         
-        for result_file in self.results_dir.glob(f"{pdf_name}_*.json"):
+        for result_file in self.results_dir.glob(f"*-*-{pdf_name}-*.json"):
             with open(result_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 results.append(ExtractionResult(**data))
@@ -123,15 +106,7 @@ class ResultScorer:
         results: List[ExtractionResult],
         ground_truth: Optional[Dict[str, Any]] = None
     ) -> ComparisonResult:
-        """Compare multiple extraction results against each other or ground truth
-        
-        Args:
-            results: List of extraction results to compare
-            ground_truth: Optional ground truth data for validation
-            
-        Returns:
-            Comparison result with scores
-        """
+        """Compare multiple extraction results against each other or ground truth"""
         if not results:
             raise ValueError("No results to compare")
         
@@ -149,6 +124,7 @@ class ResultScorer:
         
         field_scores = []
         consensus_data = {}
+        gt_data = None
 
         if ground_truth:
             # Use Ground Truth as the baseline for comparison
@@ -163,7 +139,7 @@ class ResultScorer:
                     value=val,
                     agreement_count=1,
                     total_models=1,
-                    confidence=1.0 # Ground truth is 100% confident
+                    confidence=1.0 
                 ))
             consensus_data = gt_data
         else:
@@ -195,24 +171,21 @@ class ResultScorer:
                 if score.confidence >= 0.5:
                     self._set_nested_value(consensus_data, score.field_name, score.value)
         
-        # Find best extraction using new scoring system
+        # Find best extraction using similarity scoring
         best_result = None
         best_score = float('-inf')
         
-        all_extracted_data = [r.extracted_data for r in successful if r.extracted_data]
+        reference_data = gt_data if gt_data else consensus_data
         
         for result in successful:
             if not result.extracted_data:
                 continue
             
-            score = self._calculate_result_score(
-                result.extracted_data, 
-                field_scores,
-                all_extracted_data,
-                is_ground_truth=bool(ground_truth)
-            )
+            # Calculate similarity score (0 to 100)
+            similarity = self.calculate_similarity(result.extracted_data, reference_data)
+            score = similarity * 100.0
             
-            print(f"[Scoring] {result.extractor_name} + {result.llm_provider}/{result.llm_model}: score = {score:.2f}")
+            print(f"[Scoring] {result.extractor_name} + {result.llm_provider}/{result.llm_model}: similarity = {similarity:.4f}, score = {score:.2f}")
             
             if score > best_score:
                 best_score = score
@@ -228,6 +201,79 @@ class ResultScorer:
             avg_extraction_time=sum(r.extraction_time for r in successful) / len(successful)
         )
     
+    def calculate_similarity(self, extracted: Any, reference: Any) -> float:
+        """Calculate a similarity score between 0 and 1.
+        Based on row-level correctness for lists and field-level for dicts.
+        """
+        if extracted == reference:
+            return 1.0
+        
+        # Numeric comparison
+        if isinstance(extracted, (int, float)) and isinstance(reference, (int, float)):
+            if reference == 0:
+                return 1.0 if extracted == 0 else 0.0
+            return max(0, 1.0 - abs(extracted - reference) / abs(reference)) if reference != 0 else 0.0
+
+        # String comparison
+        if isinstance(extracted, str) and isinstance(reference, str):
+            e_clean = extracted.strip().lower()
+            r_clean = reference.strip().lower()
+            if e_clean == r_clean:
+                return 1.0
+            return 0.0
+            
+        # Dictionary comparison
+        if isinstance(extracted, dict) and isinstance(reference, dict):
+            if not reference:
+                return 1.0 if not extracted else 0.5
+            
+            total_score = 0.0
+            relevant_fields = list(reference.keys())
+            if not relevant_fields:
+                return 1.0
+                
+            for k in relevant_fields:
+                if k in extracted:
+                    total_score += self.calculate_similarity(extracted[k], reference[k])
+            
+            return total_score / len(relevant_fields)
+            
+        # List comparison (Row-based scoring)
+        if isinstance(extracted, list) and isinstance(reference, list):
+            if not reference:
+                return 1.0 if not extracted else 0.0
+            
+            # Match each reference item to the best extracted item
+            total_score = 0.0
+            matched_indices = set()
+            
+            for ref_item in reference:
+                best_item_score = 0.0
+                best_idx = -1
+                
+                for i, ext_item in enumerate(extracted):
+                    if i in matched_indices:
+                        continue
+                    item_score = self.calculate_similarity(ext_item, ref_item)
+                    if item_score > best_item_score:
+                        best_item_score = item_score
+                        best_idx = i
+                    if best_item_score == 1.0:
+                        break
+                
+                # A row is "correct" if it has high similarity
+                total_score += best_item_score
+                if best_idx != -1 and best_item_score > 0.8: 
+                    matched_indices.add(best_idx)
+            
+            # Penalize for extra items in extracted? 
+            # If reference has 10 rows and model returns 20, score should reflect that 10 were right but 10 were extra.
+            penalty = max(0, len(extracted) - len(reference)) * 0.1 # Small penalty for each extra row
+            
+            return max(0, (total_score / len(reference)) - (penalty / len(reference)))
+            
+        return 0.0
+
     def _calculate_result_score(
         self, 
         extracted_data: Dict, 
@@ -235,65 +281,19 @@ class ResultScorer:
         all_results: Optional[List[Dict]] = None,
         is_ground_truth: bool = False
     ) -> float:
-        """Calculate score for an extraction result
-        
-        If is_ground_truth is True, scores match against the ground truth.
-        """
-        # Flatten this result's data
-        this_fields = defaultdict(list)
-        self._flatten_dict(extracted_data, "", this_fields)
-        
-        score = 0.0
-        
-        # Build baseline map for quick lookup
-        baseline_map = {fs.field_name: fs for fs in field_scores}
-        
-        # Get unique identifier field names
-        unique_identifiers = self._get_unique_identifiers(extracted_data)
-        
-        # Group fields by record
-        record_groups = self._group_by_record(this_fields, unique_identifiers)
-        baseline_groups = self._group_by_record_from_consensus(field_scores, unique_identifiers)
-        
-        for record_key, record_fields in record_groups.items():
-            baseline_for_record = baseline_groups.get(record_key, {})
+        """Legacy support for the API/UI - calculates a score based on field_scores"""
+        # Build a temporary reference dict from field_scores
+        reference = {}
+        for fs in field_scores:
+            self._set_nested_value(reference, fs.field_name, fs.value)
             
-            for field_name, field_value in record_fields.items():
-                if any(ignored in field_name for ignored in self.ignored_fields):
-                    continue
-                if any(uid in field_name for uid in unique_identifiers):
-                    continue
-                
-                baseline_field = baseline_for_record.get(field_name) or baseline_map.get(field_name)
-                
-                if baseline_field is None:
-                    # Extra field extracted
-                    score += 0.5 if not is_ground_truth else -1.0 # Penalty if GT doesn't have it
-                    continue
-                
-                this_value_str = json.dumps(field_value, sort_keys=True) if not isinstance(field_value, (str, float, int)) else field_value
-                baseline_value_str = json.dumps(baseline_field.value, sort_keys=True) if not isinstance(baseline_field.value, (str, float, int)) else baseline_field.value
-                
-                if str(this_value_str).lower() == str(baseline_value_str).lower():
-                    # Match!
-                    if is_ground_truth:
-                        score += 10.0 # High reward for matching Ground Truth
-                    else:
-                        score += 1.0 if baseline_field.confidence < 1.0 else 0.1
-                else:
-                    # Mismatch
-                    score -= 5.0 if is_ground_truth else 1.0
-        
-        return score
-    
+        similarity = self.calculate_similarity(extracted_data, reference)
+        return similarity * 100.0
+
     def _flatten_dict(self, d: Dict, prefix: str, result: Dict[str, List]):
         """Flatten nested dictionary for comparison"""
         for key, value in d.items():
             full_key = f"{prefix}.{key}" if prefix else key
-            
-            # Skip ignored fields
-            if key in self.ignored_fields or full_key in self.ignored_fields:
-                continue
             
             if isinstance(value, dict):
                 self._flatten_dict(value, full_key, result)
@@ -314,8 +314,8 @@ class ResultScorer:
         for key in keys[:-1]:
             if '[' in key:
                 # Handle list indices
-                key_name, idx = key.split('[')
-                idx = int(idx.rstrip(']'))
+                key_name, rest = key.split('[')
+                idx = int(rest.rstrip(']'))
                 
                 if key_name not in current:
                     current[key_name] = []
@@ -327,76 +327,14 @@ class ResultScorer:
                     current[key] = {}
                 current = current[key]
         
-        current[keys[-1]] = value
-    
-    def _get_unique_identifiers(self, extracted_data: Dict) -> List[str]:
-        """Get unique identifier field names"""
-        if self.custom_unique_identifiers:
-            return self.custom_unique_identifiers
-        
-        # Default fallback
-        if 'consumi' in extracted_data and extracted_data['consumi']:
-            return ['codice', 'giorno_inizio', 'giorno_fine']
-        
-        return []
-    
-    def _group_by_record(self, fields: Dict[str, List], unique_identifiers: List[str]) -> Dict[str, Dict[str, Any]]:
-        """Group flattened fields by record using unique identifiers"""
-        if not unique_identifiers:
-            return {"all": {k: v[0] if v else None for k, v in fields.items()}}
-        
-        records = defaultdict(dict)
-        
-        for field_name, values in fields.items():
-            if '[' in field_name:
-                parts = field_name.split('[')
-                if len(parts) > 1:
-                    idx_str = parts[1].split(']')[0]
-                    record_idx = int(idx_str)
-                    
-                    # Try to find list name (e.g. 'consumi' or 'fatture' or 'rifiuti')
-                    list_name = parts[0]
-                    
-                    record_key_parts = []
-                    for uid in unique_identifiers:
-                        uid_field = f"{list_name}[{record_idx}].{uid}"
-                        if uid_field in fields and fields[uid_field]:
-                            record_key_parts.append(str(fields[uid_field][0]))
-                    
-                    record_key = "|".join(record_key_parts) if record_key_parts else f"record_{record_idx}"
-                    records[record_key][field_name] = values[0] if values else None
-            else:
-                records["all"][field_name] = values[0] if values else None
-        
-        return records
-    
-    def _group_by_record_from_consensus(self, field_scores: List[FieldScore], unique_identifiers: List[str]) -> Dict[str, Dict[str, FieldScore]]:
-        """Group baseline field scores by record"""
-        if not unique_identifiers:
-            return {"all": {fs.field_name: fs for fs in field_scores}}
-        
-        records = defaultdict(dict)
-        
-        for field_score in field_scores:
-            field_name = field_score.field_name
-            
-            if '[' in field_name:
-                parts = field_name.split('[')
-                if len(parts) > 1:
-                    idx_str = parts[1].split(']')[0]
-                    record_idx = int(idx_str)
-                    list_name = parts[0]
-                    
-                    record_key_parts = []
-                    for uid in unique_identifiers:
-                        uid_field = f"{list_name}[{record_idx}].{uid}"
-                        uid_score = next((fs for fs in field_scores if fs.field_name == uid_field), None)
-                        if uid_score:
-                            record_key_parts.append(str(uid_score.value))
-                    
-                    record_key = "|".join(record_key_parts) if record_key_parts else f"record_{record_idx}"
-                    records[record_key][field_name] = field_score
-            else:
-                records["all"][field_name] = field_score
-        
-        return records
+        last_key = keys[-1]
+        if '[' in last_key:
+             key_name, rest = last_key.split('[')
+             idx = int(rest.rstrip(']'))
+             if key_name not in current:
+                 current[key_name] = []
+             while len(current[key_name]) <= idx:
+                 current[key_name].append(None)
+             current[key_name][idx] = value
+        else:
+            current[last_key] = value

@@ -4,6 +4,14 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
 
+class ExtractionError(Exception):
+    """Exception raised when LLM extraction parsing fails, carrying partial telemetry and raw output."""
+    def __init__(self, message: str, raw_content: str = None, token_usage: Dict[str, Any] = None):
+        super().__init__(message)
+        self.raw_content = raw_content
+        self.token_usage = token_usage or {}
+
+
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers"""
     

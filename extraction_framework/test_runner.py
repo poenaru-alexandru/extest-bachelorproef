@@ -25,7 +25,33 @@ except ImportError:
 
 try:
     from ecologits import EcoLogits
-    EcoLogits.init(providers=["huggingface_hub"], electricity_mix_zone="ITA")
+    EcoLogits.init(providers=["huggingface_hub"])
+    
+    # Manual registration for EcoLogits to handle custom model names/aliases
+    try:
+        from ecologits.tracers.huggingface_tracer import llm_impacts
+        repo = llm_impacts.__globals__['models']
+        
+        # Mapping for common aliases
+        custom_models = [
+            {
+                'provider': 'huggingface_hub',
+                'name': 'qwen/qwen3-vl-8b-instruct',
+                'architecture': {'type': 'dense', 'parameters': 9}
+            },
+            {
+                'provider': 'huggingface_hub',
+                'name': 'meta-llama/llama-3.1-8b-instruct',
+                'architecture': {'type': 'dense', 'parameters': 8.03}
+            }
+        ]
+        
+        for m_data in custom_models:
+            repo.add_model(m_data)
+        print("[EcoLogits] Successfully registered custom model aliases")
+    except Exception as e:
+        print(f"[EcoLogits] Warning: Could not register custom model aliases: {e}")
+        
     ECOLOGITS_AVAILABLE = True
 except ImportError:
     ECOLOGITS_AVAILABLE = False
@@ -44,24 +70,6 @@ class TestRunner:
         self.ground_truth_dir = ground_truth_dir or Path(__file__).parent / "ground_truth"
         self.scorer = ResultScorer(self.results_dir)
         self.model_loader = model_loader
-    
-    def set_scoring_rules_for_test(self, test_folder: str):
-        """Update scorer with rules from test folder's regole.py
-        
-        Args:
-            test_folder: Name of the test folder
-        """
-        if not self.model_loader:
-            return
-        
-        unique_ids, ignored_fields = self.model_loader.load_scoring_rules(test_folder)
-        
-        # Create new scorer with custom rules
-        self.scorer = ResultScorer(
-            self.results_dir,
-            ignored_fields=ignored_fields,
-            unique_identifiers=unique_ids
-        )
     
     def _resolve_model(self, test_folder: str, extraction_model: Optional[type], extraction_model_module):
         """Helper to resolve the extraction model and module for a folder"""
@@ -160,11 +168,10 @@ class TestRunner:
                 provider = get_provider("local", model_name)
                 for pdf_file in pdf_files:
                     test_folder = pdf_file.parent.name
-                    self.set_scoring_rules_for_test(test_folder)
                     # Resolve models
                     current_model, current_module = self._resolve_model(test_folder, extraction_model, extraction_model_module)
                     for extractor_name in extractors:
-                        print(f"\n--- Testing: {pdf_file.name} | {extractor_name} ---")
+                        print(f"\n--- Testing: {pdf_file.name} | {extractor_name} | {model_name} ---")
                         result = self._run_extraction_with_provider(
                             pdf_path=pdf_file,
                             extractor_name=extractor_name,
@@ -202,9 +209,6 @@ class TestRunner:
         for pdf_file in pdf_files:
             test_folder = pdf_file.parent.name
             
-            # Use specific rules for this test folder
-            self.set_scoring_rules_for_test(test_folder)
-            
             # Resolve models if not fixed
             current_model = extraction_model
             current_module = extraction_model_module
@@ -216,7 +220,7 @@ class TestRunner:
 
             for llm_config in cloud_configs:
                 for extractor_name in extractors:
-                    print(f"\n--- Testing: {pdf_file.name} | {extractor_name} | {llm_config['provider']} ---")
+                    print(f"\n--- Testing: {pdf_file.name} | {extractor_name} | {llm_config['model']} ---")
                     result = self.run_extraction(
                         pdf_file,
                         extractor_name,
@@ -315,10 +319,17 @@ class TestRunner:
                 cpu_energy_kwh=emissions_data.get('cpu_energy_kwh'), 
                 gpu_energy_kwh=emissions_data.get('gpu_energy_kwh'), 
                 ram_energy_kwh=emissions_data.get('ram_energy_kwh'),
-                energy_source=emissions_data.get('energy_source') or token_usage.get('energy_source'),
-                page_filter_stats=None
+                energy_source=emissions_data.get('energy_source') or token_usage.get('energy_source')
             )
         except Exception as e:
+            from extraction_framework.llm_providers.base_provider import ExtractionError
+            token_usage = getattr(e, 'token_usage', {})
+            raw_content = getattr(e, 'raw_content', None)
+            extracted_data = {"raw_content": raw_content} if raw_content else None
+            
+            # Retrieve emissions data if it was set before exception
+            emissions = locals().get('emissions_data', {})
+            
             return ExtractionResult(
                 pdf_file=str(pdf_path), 
                 extractor_name=extractor_name, 
@@ -327,7 +338,20 @@ class TestRunner:
                 extraction_time=time.time() - start_time, 
                 success=False, 
                 error=str(e), 
-                timestamp=datetime.now().isoformat()
+                extracted_data=extracted_data,
+                timestamp=datetime.now().isoformat(),
+                ttft_seconds=token_usage.get('ttft_seconds'),
+                generation_seconds=token_usage.get('generation_seconds'),
+                total_inference_seconds=token_usage.get('total_inference_seconds'),
+                input_tokens=token_usage.get('input', 0),
+                output_tokens=token_usage.get('output', 0),
+                total_tokens=token_usage.get('total', 0),
+                energy_kwh=emissions.get('energy_kwh') or token_usage.get('energy_kwh'),
+                co2_kg=emissions.get('co2_kg') or token_usage.get('co2_kg'),
+                cpu_energy_kwh=emissions.get('cpu_energy_kwh'), 
+                gpu_energy_kwh=emissions.get('gpu_energy_kwh'), 
+                ram_energy_kwh=emissions.get('ram_energy_kwh'),
+                energy_source=emissions.get('energy_source') or token_usage.get('energy_source')
             )
 
 
