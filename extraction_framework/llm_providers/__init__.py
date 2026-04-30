@@ -110,12 +110,8 @@ def get_provider(
         base_dir = Path(__file__).parent.parent.parent.parent
         model_path = base_dir / "local_models" / (model if model and model.endswith(".gguf") else f"{model}.gguf" if model else "")
         
-        # Load optional context window from env or use default
-        n_ctx = int(os.getenv("LOCAL_LLM_CONTEXT", "16384"))
-        
         return LlamaCppProvider(
-            model_path=str(model_path),
-            n_ctx=n_ctx
+            model_path=str(model_path)
         )
     
     # Return HuggingFaceProvider for HF endpoints

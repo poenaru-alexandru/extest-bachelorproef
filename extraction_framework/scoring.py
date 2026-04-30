@@ -77,6 +77,10 @@ class ResultScorer:
             model_short = 'mistral'
         elif 'gemma' in model_lower:
             model_short = 'gemma'
+        elif 'qwen' in model_lower:
+            model_short = 'qwen'
+        elif 'apertus' in model_lower:
+            model_short = 'apertus'
         else:
             model_short = model_lower.replace('/', '_').replace('\\', '_').replace(':', '_')
             
@@ -90,23 +94,68 @@ class ResultScorer:
         return filepath
     
     def load_results_for_pdf(self, pdf_file: str) -> List[ExtractionResult]:
-        """Load all results for a specific PDF"""
+        """Load all results for a specific PDF recursively from subdirectories"""
         pdf_name = Path(pdf_file).stem
         results = []
         
-        for result_file in self.results_dir.glob(f"*-*-{pdf_name}-*.json"):
+        for result_file in self.results_dir.rglob(f"*-*-{pdf_name}-*.json"):
             with open(result_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 results.append(ExtractionResult(**data))
         
         return results
     
+    def validate_and_score(self, data: Dict[str, Any]) -> float:
+        """
+        Rule-based scoring:
+        1. Check for 'periodes' array with at least one item (25 pts)
+        2. Check if exactly one item in 'periodes' (15 pts)
+        3. Check for 4 required fields in the first item (10 pts each = 40 pts)
+        4. Check types of required fields (5 pts each = 20 pts)
+        
+        Total = 100 points
+        """
+        score = 0.0
+        
+        if not isinstance(data, dict):
+            return 0.0
+            
+        periodes = data.get('periodes')
+        
+        # 1. Check for 'periodes' array with at least one item
+        if isinstance(periodes, list) and len(periodes) >= 1:
+            score += 25.0
+            
+            # 2. Check if exactly one item
+            if len(periodes) == 1:
+                score += 15.0
+            
+            first_item = periodes[0]
+            if isinstance(first_item, dict):
+                required_fields = ['supplier', 'start_date', 'end_date', 'kwh_quantity']
+                
+                # 3. Check for presence of required fields
+                for field in required_fields:
+                    if field in first_item:
+                        score += 10.0
+                        
+                        # 4. Check types
+                        val = first_item[field]
+                        if field == 'kwh_quantity':
+                            if val is None or isinstance(val, (int, float)):
+                                score += 5.0
+                        else:
+                            if val is None or isinstance(val, str):
+                                score += 5.0
+        
+        return score
+
     def compare_results(
         self, 
         results: List[ExtractionResult],
         ground_truth: Optional[Dict[str, Any]] = None
     ) -> ComparisonResult:
-        """Compare multiple extraction results against each other or ground truth"""
+        """Compare multiple extraction results using rule-based scoring"""
         if not results:
             raise ValueError("No results to compare")
         
@@ -122,82 +171,40 @@ class ResultScorer:
                 avg_extraction_time=sum(r.extraction_time for r in results) / len(results)
             )
         
-        field_scores = []
-        consensus_data = {}
-        gt_data = None
-
-        if ground_truth:
-            # Use Ground Truth as the baseline for comparison
-            gt_data = ground_truth.get("data", ground_truth)
-            gt_fields = defaultdict(list)
-            self._flatten_dict(gt_data, "", gt_fields)
-            
-            for field_name, values in gt_fields.items():
-                val = values[0] if values else None
-                field_scores.append(FieldScore(
-                    field_name=field_name,
-                    value=val,
-                    agreement_count=1,
-                    total_models=1,
-                    confidence=1.0 
-                ))
-            consensus_data = gt_data
-        else:
-            # Analyze field agreement (consensus among models)
-            field_values = defaultdict(list)
-            for result in successful:
-                self._flatten_dict(result.extracted_data, "", field_values)
-            
-            for field_name, values in field_values.items():
-                value_counts = defaultdict(int)
-                for value in values:
-                    value_str = json.dumps(value, sort_keys=True)
-                    value_counts[value_str] += 1
-                
-                most_common_str = max(value_counts.items(), key=lambda x: x[1])[0]
-                most_common_value = json.loads(most_common_str)
-                agreement_count = value_counts[most_common_str]
-                
-                field_scores.append(FieldScore(
-                    field_name=field_name,
-                    value=most_common_value,
-                    agreement_count=agreement_count,
-                    total_models=len(values),
-                    confidence=agreement_count / len(values)
-                ))
-            
-            # Build consensus data
-            for score in field_scores:
-                if score.confidence >= 0.5:
-                    self._set_nested_value(consensus_data, score.field_name, score.value)
-        
-        # Find best extraction using similarity scoring
+        # Calculate scores for each successful extraction using rule-based logic
         best_result = None
         best_score = float('-inf')
         
-        reference_data = gt_data if gt_data else consensus_data
-        
         for result in successful:
-            if not result.extracted_data:
-                continue
+            score = self.validate_and_score(result.extracted_data)
             
-            # Calculate similarity score (0 to 100)
-            similarity = self.calculate_similarity(result.extracted_data, reference_data)
-            score = similarity * 100.0
-            
-            print(f"[Scoring] {result.extractor_name} + {result.llm_provider}/{result.llm_model}: similarity = {similarity:.4f}, score = {score:.2f}")
+            print(f"[Scoring] {result.extractor_name} + {result.llm_provider}/{result.llm_model}: rule-based score = {score:.2f}")
             
             if score > best_score:
                 best_score = score
                 best_result = result
-        
+
+        # We still return field_scores for compatibility, but we populate them from the best result
+        field_scores = []
+        if best_result and best_result.extracted_data:
+            field_values = defaultdict(list)
+            self._flatten_dict(best_result.extracted_data, "", field_values)
+            for field_name, values in field_values.items():
+                field_scores.append(FieldScore(
+                    field_name=field_name,
+                    value=values[0],
+                    agreement_count=1,
+                    total_models=1,
+                    confidence=1.0
+                ))
+
         return ComparisonResult(
             pdf_file=pdf_file,
             total_extractions=len(results),
             successful_extractions=len(successful),
             field_scores=field_scores,
             best_extraction=best_result,
-            consensus_data=consensus_data,
+            consensus_data=best_result.extracted_data if best_result else {},
             avg_extraction_time=sum(r.extraction_time for r in successful) / len(successful)
         )
     

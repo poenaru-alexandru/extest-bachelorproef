@@ -22,4 +22,4 @@ ecologits
 
 
 
-llama-cpp-python -C cmake.args="-DGGML_CUDA=on;-DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2"
+llama-cpp-python -C cmake.args="-DGGML_CUDA=on -DGGML_CUDA_FORCE_DISABLE_GRAPHS=on -DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2"

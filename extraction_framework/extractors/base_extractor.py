@@ -21,34 +21,3 @@ class BaseExtractor(ABC):
             Extracted text as string
         """
         pass
-    
-    @abstractmethod
-    def extract_pages(self, pdf_path: Path) -> List[str]:
-        """Extract text page by page
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            List of text strings, one per page
-        """
-        pass
-    
-
-    
-    def extract_metadata(self, pdf_path: Path) -> Dict:
-        """Extract PDF metadata (optional)
-        
-        Args:
-            pdf_path: Path to PDF file
-            
-        Returns:
-            Dictionary with metadata
-        """
-        return {
-            "extractor": self.name,
-            "file": str(pdf_path)
-        }
-    
-    def __str__(self):
-        return self.name
