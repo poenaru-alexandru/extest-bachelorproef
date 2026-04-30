@@ -212,9 +212,10 @@ class TestRunner:
                     print(f"\n--- Booting ISOLATED worker: {pdf_file.name} | {real_extractor_name} | {model_name} ---")
                     
                     # C. Launch the sacrificial worker process
+                    worker_script = Path(__file__).parent / "isolated_worker.py"
                     subprocess.run([
                         sys.executable, # Uses the current python environment safely
-                        "isolated_worker.py", 
+                        str(worker_script), 
                         str(payload_file), 
                         model_name, 
                         str(worker_output_file)

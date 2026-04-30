@@ -431,47 +431,36 @@
             debugLog(`Starting extraction run`, 'info');
             
             const totalTests = pdfFiles.length * extractors.length * models.length;
-            document.getElementById('resultsContainer').innerHTML = `<div class="loading"><div class="spinner"></div>Running ${totalTests} extractions...</div>`;
-            
-            const results = [];
-            let completed = 0;
+            document.getElementById('resultsContainer').innerHTML = `<div class="loading"><div class="spinner"></div>Running ${totalTests} extractions... (Check backend terminal for live progress)</div>`;
             
             try {
-                for (const pdfFile of pdfFiles) {
-                    const pdfName = pdfFile.split(/[\\\/]/).pop();
-                    
-                    for (const extractor of extractors) {
-                        for (const modelConfig of models) {
-                            completed++;
-                            document.getElementById('resultsContainer').innerHTML = `<div class="loading"><div class="spinner"></div>Extraction ${completed}/${totalTests}...</div>`;
-                            
-                            const requestData = {
-                                pdf_file: pdfFile,
-                                extractor: extractor,
-                                llm_provider: modelConfig.provider,
-                                llm_model: modelConfig.model
-                            };
-                            
-                            const response = await fetch('/api/run-test', {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify(requestData)
-                            });
-                            
-                            const result = await response.json();
-                            if (result.success) {
-                                debugLog(`Success: ${pdfName} with ${extractor}`, 'success');
-                            } else {
-                                debugLog(`Failed: ${pdfName} - ${result.error}`, 'error');
-                            }
-                            results.push(result);
-                        }
-                    }
-                }
+                const requestData = {
+                    pdf_files: pdfFiles,
+                    extractors: extractors,
+                    llm_configs: models
+                };
                 
-                displayResults(results);
+                const response = await fetch('/api/run-test', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(requestData)
+                });
+                
+                const result = await response.json();
+                if (result.success && result.results) {
+                    debugLog(`Batch completed successfully with ${result.results.length} results`, 'success');
+                    displayResults(result.results);
+                } else if (result.error) {
+                    debugLog(`Batch failed: ${result.error}`, 'error');
+                    document.getElementById('resultsContainer').innerHTML = `<div class="result-card error">Error: ${result.error}</div>`;
+                } else if (Array.isArray(result)) { // compatibility just in case
+                   displayResults(result);
+                } else {
+                   displayResults([result]);
+                }
             } catch (error) {
                 debugLog(`Fatal error: ${error.message}`, 'error');
+                document.getElementById('resultsContainer').innerHTML = `<div class="result-card error">Fatal error: ${error.message}</div>`;
             }
         }
         

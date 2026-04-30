@@ -70,11 +70,10 @@ class LlamaCppProvider(BaseLLMProvider):
             # MANDATORY 8GB SAFEGUARD: This MUST run before create_chat_completion
             self.llm.reset()
 
-            response = self.llm.create_chat_completion_openai_v1(
+            response = self.llm.create_chat_completion(
                 messages=messages,
                 temperature=0,
                 stream=True,
-                stream_options={"include_usage": True}, # Now it works
                 response_format={
                     "type": "json_object",
                     "value": schema_json
