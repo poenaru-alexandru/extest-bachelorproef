@@ -151,6 +151,9 @@ cython_debug/
 extraction_framework/results/
 extraction_framework/.env
 
-Test/**/*.pdf
+extraction_framework/Test/*.pdf
 Test/**/*/*.json
 extracted_data/
+
+CLAUDE.md
+extraction_framework/.claude

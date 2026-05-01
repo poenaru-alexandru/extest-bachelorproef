@@ -1,142 +1,160 @@
-"""Provider for local GGUF models using llama-cpp-python"""
+"""Provider for local GGUF models via native llama-server HTTP API."""
 import json
-from pathlib import Path
-from typing import Dict, Tuple, Type, Optional
+import time
+from typing import Dict, Optional, Tuple, Type
+
 from pydantic import BaseModel
+
 from .base_provider import BaseLLMProvider, ExtractionError, build_extraction_messages
 
 try:
-    from llama_cpp import Llama
-    from llama_cpp.llama_grammar import LlamaGrammar
-    import llama_cpp
-    LLAMA_CPP_AVAILABLE = True
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
 except ImportError:
-    LLAMA_CPP_AVAILABLE = False
+    OPENAI_AVAILABLE = False
+
+try:
+    from codecarbon import OfflineEmissionsTracker
+    CODECARBON_AVAILABLE = True
+except ImportError:
+    CODECARBON_AVAILABLE = False
 
 
 class LlamaCppProvider(BaseLLMProvider):
-    
-    def __init__(
-        self, 
-        model_path: str,
-        n_ctx: int = 32768,
-    ):
-        model_name = Path(model_path).name
+    """Talks to a running llama-server instance via its OpenAI-compatible API."""
+
+    def __init__(self, base_url: str, model_name: str):
         super().__init__("local", model_name)
-        
-        if not LLAMA_CPP_AVAILABLE:
-            raise ImportError("llama-cpp-python not installed.")
-        
-        if not Path(model_path).exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-            
-        print(f"[LlamaCpp] Loading model: {model_name} (n_ctx={n_ctx})")
-        
-        # BEST CAPACITY CONFIGURATION FOR RTX 4060 8GB
-        self.llm = Llama(
-            model_path=model_path,
-            n_ctx=n_ctx,
-            n_gpu_layers=-1,
-            n_batch=2048,           
-            n_ubatch=2048,        
-            flash_attn=True,        
-            # type_k=llama_cpp.GGML_TYPE_Q4_0,
-            # type_v=llama_cpp.GGML_TYPE_Q4_0,
-            # use_mmap=False,
-            # offload_kqv=True,
-            verbose=True
-        ) 
-        
+        if not OPENAI_AVAILABLE:
+            raise ImportError("openai package not installed. Run: pip install openai")
+        # api_key is required by the openai client but ignored by llama-server
+        self._client = OpenAI(base_url=base_url, api_key="not-needed")
+
     def extract_structured_data(
-        self, 
-        text: str, 
+        self,
+        text: str,
         schema: Type[BaseModel],
-        system_prompt: Optional[str] = None
-    ) -> Tuple[BaseModel, Dict[str, int]]:
-        """Extract structured data using local GGUF model and native JSON grammars with streaming telemetry"""
-        import time
-
-        # Centralized Prompt Engine (Strict Grammar = True)
+        system_prompt: Optional[str] = None,
+    ) -> Tuple[BaseModel, Dict]:
+        """Run a single inference call and return the validated model + telemetry dict."""
         messages = build_extraction_messages(text, schema)
-        
-        # Pass the raw, nested schema strictly to the grammar engine
         schema_json = schema.model_json_schema()
-        
+
+        tracker = None
+        if CODECARBON_AVAILABLE:
+            tracker = OfflineEmissionsTracker(
+                project_name="local_inference",
+                measure_power_secs=0.1,
+                save_to_file=False,
+                log_level="error",
+                country_iso_code="ITA",
+            )
+            tracker.start()
+
+        start_time = time.time()
+        ttft: Optional[float] = None
+        accumulated_content = ""
+        prompt_tokens = 0
+        completion_tokens = 0
+        end_time = start_time  # fallback if stream fails before assigning
+
         try:
-            start_time = time.time()
-            ttft = None
-            accumulated_content = ""
-
-            # MANDATORY 8GB SAFEGUARD: This MUST run before create_chat_completion
-            self.llm.reset()
-
-            response = self.llm.create_chat_completion(
+            stream = self._client.chat.completions.create(
+                model=self.model,
                 messages=messages,
                 temperature=0,
                 stream=True,
+                stream_options={"include_usage": True},
                 response_format={
-                    "type": "json_object",
-                    "value": schema_json
-                }
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": schema.__name__,
+                        "schema": schema_json,
+                        "strict": True,
+                    },
+                },
             )
-            
-            prompt_tokens = 0
-            completion_tokens = 0
 
-            for raw_chunk in response:
-                if ttft is None:
-                    ttft = time.time() - start_time
-                
-                # 2. Convert the Pydantic object back to a dict to preserve your logic
-                chunk = raw_chunk.model_dump() if hasattr(raw_chunk, 'model_dump') else dict(raw_chunk)
-                
-                delta = chunk["choices"][0]["delta"]
-                if "content" in delta and delta["content"]:
-                    accumulated_content += delta["content"]
-                    completion_tokens += 1 
-                
-                if "usage" in chunk and chunk["usage"]:
-                    prompt_tokens = chunk["usage"]["prompt_tokens"]
-                    completion_tokens = chunk["usage"]["completion_tokens"]
+            for chunk in stream:
+                # Record time-to-first-token on first chunk that carries content
+                if ttft is None and chunk.choices:
+                    delta_content = chunk.choices[0].delta.content
+                    if delta_content:
+                        ttft = time.time() - start_time
+
+                if chunk.choices:
+                    delta_content = chunk.choices[0].delta.content
+                    if delta_content:
+                        accumulated_content += delta_content
+
+                # Usage arrives in the final chunk (stream_options.include_usage)
+                if chunk.usage:
+                    prompt_tokens = chunk.usage.prompt_tokens
+                    completion_tokens = chunk.usage.completion_tokens
+
             end_time = time.time()
-            total_time = end_time - start_time
-            gen_time = total_time - (ttft or 0)
 
-            if prompt_tokens == 0:
-                try:
-                    prompt_text = "\n".join([m.get("content", "") for m in messages])
-                    prompt_tokens = len(self.llm.tokenize(prompt_text.encode("utf-8")))
-                except Exception:
-                    input_chars = sum(len(m.get("content", "")) for m in messages)
-                    prompt_tokens = int(input_chars / 4)
+        finally:
+            if tracker:
+                tracker.stop()
 
+        total_time = end_time - start_time
+        gen_time = total_time - (ttft or 0)
+
+        impacts = self._read_codecarbon(tracker)
+
+        try:
             parsed_json = json.loads(accumulated_content)
-            
+            # llama-server sometimes wraps the result under the schema class name
             class_name = schema.__name__
             if class_name in parsed_json and len(parsed_json) == 1:
                 parsed_json = parsed_json[class_name]
-
-            token_usage = {
-                'ttft_seconds': ttft,
-                'generation_seconds': gen_time,
-                'total_inference_seconds': total_time,
-                'input': prompt_tokens,
-                'output': completion_tokens,
-                'total': prompt_tokens + completion_tokens
-            }
-            
-            return schema.model_validate(parsed_json), token_usage
-            
+            result = schema.model_validate(parsed_json)
         except Exception as e:
+            token_usage = self._build_token_usage(
+                ttft, gen_time, total_time, prompt_tokens, completion_tokens, impacts
+            )
             raise ExtractionError(
-                message=f"Failed to parse LLM response. Error: {e}.",
-                raw_content=accumulated_content if 'accumulated_content' in locals() else "",
-                token_usage=token_usage if 'token_usage' in locals() else {}
+                message=f"Failed to parse LLM response: {e}",
+                raw_content=accumulated_content,
+                token_usage=token_usage,
             )
 
-    def close(self):
-        """Unload model from memory"""
-        if hasattr(self, 'llm'):
-            del self.llm
-            import gc
-            gc.collect()
+        token_usage = self._build_token_usage(
+            ttft, gen_time, total_time, prompt_tokens, completion_tokens, impacts
+        )
+        return result, token_usage
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _read_codecarbon(self, tracker) -> Dict:
+        if tracker is None:
+            return {}
+        d = getattr(tracker, "final_emissions_data", None)
+        return {
+            "energy_kwh":     d.energy_consumed if d else None,
+            "co2_kg":         d.emissions       if d else None,
+            "cpu_energy_kwh": d.cpu_energy      if d else None,
+            "gpu_energy_kwh": d.gpu_energy      if d else None,
+            "ram_energy_kwh": d.ram_energy      if d else None,
+        }
+
+    def _build_token_usage(
+        self, ttft, gen_time, total_time, prompt_tokens, completion_tokens, impacts
+    ) -> Dict:
+        return {
+            "ttft_seconds":            ttft,
+            "generation_seconds":      gen_time,
+            "total_inference_seconds": total_time,
+            "input":                   prompt_tokens,
+            "output":                  completion_tokens,
+            "total":                   prompt_tokens + completion_tokens,
+            "energy_kwh":              impacts.get("energy_kwh"),
+            "co2_kg":                  impacts.get("co2_kg"),
+            "cpu_energy_kwh":          impacts.get("cpu_energy_kwh"),
+            "gpu_energy_kwh":          impacts.get("gpu_energy_kwh"),
+            "ram_energy_kwh":          impacts.get("ram_energy_kwh"),
+            "energy_source":           "codecarbon" if impacts else None,
+        }

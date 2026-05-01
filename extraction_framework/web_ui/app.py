@@ -27,7 +27,7 @@ CORS(app)
 
 # Initialize components
 BASE_DIR = Path(__file__).parent.parent.parent
-TEST_DIR = BASE_DIR / "Test"
+TEST_DIR = Path(__file__).parent.parent / "Test"
 RESULTS_DIR = BASE_DIR / "extraction_framework" / "results"
 GT_DIR = BASE_DIR / "extraction_framework" / "ground_truth"
 

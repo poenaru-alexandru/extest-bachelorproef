@@ -1,6 +1,6 @@
 """Main test runner orchestrating all extraction strategies"""
+import os
 import sys
-import subprocess
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -15,22 +15,22 @@ import extraction_framework.console
 
 from extraction_framework.extractors import get_all_extractors
 from extraction_framework.extractors.markdown_extractor import MarkdownExtractor
-from extraction_framework.llm_providers import get_provider
+from extraction_framework.llm_providers import get_provider, resolve_local_model_path
+from extraction_framework.llm_providers.local_server_manager import LocalServerManager
+from extraction_framework.llm_providers.llama_cpp_provider import LlamaCppProvider
 from extraction_framework.scoring import ResultScorer, ExtractionResult
 import logging
 
-from Test.modello import BachelorProefModel
+from extraction_framework.Test.modello import BachelorProefModel
 
 try:
     from ecologits import EcoLogits
     EcoLogits.init(providers=["huggingface_hub"])
-    
-    # Manual registration for EcoLogits to handle custom model names/aliases
+
     try:
         from ecologits.tracers.huggingface_tracer import llm_impacts
         repo = llm_impacts.__globals__['models']
-        
-        # Mapping for common aliases
+
         custom_models = [
             {
                 'provider': 'huggingface_hub',
@@ -48,13 +48,13 @@ try:
                 'architecture': {'type': 'dense', 'parameters': 8}
             }
         ]
-        
+
         for m_data in custom_models:
             repo.add_model(m_data)
         print("[EcoLogits] Successfully registered custom model aliases")
     except Exception as e:
         print(f"[EcoLogits] Warning: Could not register custom model aliases: {e}")
-        
+
     ECOLOGITS_AVAILABLE = True
 except ImportError:
     ECOLOGITS_AVAILABLE = False
@@ -62,16 +62,20 @@ except ImportError:
 
 class TestRunner:
     """Run extraction tests with various configurations"""
-    
+
     def __init__(
-        self, 
+        self,
         results_dir: Path = None,
         ground_truth_dir: Path = None
     ):
         self.results_dir = results_dir or Path(__file__).parent / "results"
         self.ground_truth_dir = ground_truth_dir or Path(__file__).parent / "ground_truth"
         self.scorer = ResultScorer(self.results_dir)
-        self.text_cache = {}  # Cache for extracted document text: (pdf_path, extractor_name) -> text
+        self.text_cache = {}  # (pdf_path, extractor_name) -> (text, real_extractor_name)
+
+        # When True: load → infer → unload for every single (pdf × model) call.
+        # When False: load model once → infer all PDFs → unload → next model.
+        self._reload_per_call = os.getenv("LLAMA_RELOAD_MODEL_PER_CALL", "true").lower() == "true"
 
     def run_extraction(
         self,
@@ -83,9 +87,8 @@ class TestRunner:
         extraction_model: Optional[type] = BachelorProefModel,
         use_preselection: bool = False
     ) -> ExtractionResult:
-        """Run a single cloud extraction test by instantiating a temporary provider"""
+        """Run a single cloud extraction test by instantiating a temporary provider."""
         try:
-            # Instantiate provider 
             provider = get_provider(llm_provider, llm_model, llm_api_key)
             try:
                 return self._run_extraction_with_provider(
@@ -108,7 +111,7 @@ class TestRunner:
                 error=f"Initialization error: {str(e)}",
                 timestamp=datetime.now().isoformat()
             )
-    
+
     def run_test_suite(
         self,
         pdf_files: List[Path],
@@ -116,42 +119,30 @@ class TestRunner:
         llm_configs: Optional[List[Dict[str, str]]] = None,
         extraction_model: Optional[type] = BachelorProefModel
     ) -> Dict[str, List[ExtractionResult]]:
-        """Run complete test suite
-        
-        Args:
-            pdf_files: List of PDF files to test
-            extractors: List of extractor names (None = all available)
-            llm_configs: List of LLM configurations
-            extraction_model: Pydantic model for extraction
-            
-        Returns:
-            Dictionary mapping PDF files to their results
-        """
+        """Run complete test suite across all PDF files and model configurations."""
         if extractors is None:
             extractors = [e.name for e in get_all_extractors()]
-        
-        # Create a session-specific results directory
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_results_dir = self.results_dir / f"results_{timestamp}"
         session_results_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[TestRunner] Created session results directory: {session_results_dir.name}")
-        
-        # Update scorer to use the session directory for this suite run
+        print(f"[TestRunner] Session results: {session_results_dir.name}")
+        print(f"[TestRunner] Model reload mode: {'per-call' if self._reload_per_call else 'per-model batch'}")
+
         self.scorer.results_dir = session_results_dir
-            
+
         all_results = {str(pdf): [] for pdf in pdf_files}
-        
-        # Separate configs into local and cloud to optimize loading
+
         local_configs = [c for c in llm_configs if c["provider"].lower() == "local"]
         cloud_configs = [c for c in llm_configs if c["provider"].lower() != "local"]
-        
+
         # ---------------------------------------------------------
-        # 1. PROCESS CLOUD MODELS (Original Native Logic)
+        # 1. CLOUD MODELS
         # ---------------------------------------------------------
         for pdf_file in pdf_files:
             for llm_config in cloud_configs:
                 for extractor_name in extractors:
-                    print(f"\n--- Testing CLOUD: {pdf_file.name} | {extractor_name} | {llm_config['model']} ---")
+                    print(f"\n--- CLOUD: {pdf_file.name} | {extractor_name} | {llm_config['model']} ---")
                     result = self.run_extraction(
                         pdf_file,
                         extractor_name,
@@ -162,108 +153,69 @@ class TestRunner:
                     )
                     all_results[str(pdf_file)].append(result)
                     filepath = self.scorer.save_result(result)
-                    
-                    if result.success:
-                        print(f"✓ Success: {pdf_file.name} saved to {filepath.name}")
-                    else:
-                        print(f"❌ Failed: {pdf_file.name} - {result.error}")
+                    self._print_result(result, filepath)
 
         # ---------------------------------------------------------
-        # 2. PROCESS LOCAL MODELS (Isolated Worker Method)
+        # 2. LOCAL MODELS (via llama-server)
         # ---------------------------------------------------------
+        server = LocalServerManager()
+
         for llm_config in local_configs:
             model_name = llm_config["model"]
+            model_path = resolve_local_model_path(model_name)
+
             print(f"\n{'#'*60}")
-            print(f"BATCH RUN: Local Model {model_name} (ISOLATED)")
+            print(f"LOCAL: {model_name}  |  reload_per_call={self._reload_per_call}")
             print(f"{'#'*60}")
-            
+
+            if not self._reload_per_call:
+                # Per-model batch: start server once for all PDFs
+                server.start(model_path)
+                provider = LlamaCppProvider(server.base_url, model_name)
+
             for pdf_file in pdf_files:
                 for extractor_name in extractors:
-                    start_time = time.time()
-                    
-                    # A. Standardized Payload Extraction & Caching
-                    cache_key = (str(pdf_file), extractor_name)
-                    if cache_key not in self.text_cache:
-                        extractor = MarkdownExtractor()
-                        if hasattr(extractor, 'set_extraction_model'):
-                            extractor.set_extraction_model(extraction_model)
-                            
-                        document_text = extractor.extract_text(pdf_file)
-                        self.text_cache[cache_key] = (document_text, extractor.name)
-                        
-                        # Save the payload so the isolated worker can read it without parsing PDF
-                        debug_dir = Path(__file__).parent.parent / "debug_payloads"
-                        debug_dir.mkdir(exist_ok=True)
-                        payload_file = debug_dir / f"{pdf_file.stem}_{extractor.name}.txt"
-                        with open(payload_file, "w", encoding="utf-8") as f:
-                            f.write(document_text)
-                    
-                    real_extractor_name = self.text_cache[cache_key][1]
-                    payload_file = Path(__file__).parent.parent / "debug_payloads" / f"{pdf_file.stem}_{real_extractor_name}.txt"
-                    worker_output_file = Path(__file__).parent.parent / "debug_payloads" / f"{pdf_file.stem}_worker_result.json"
+                    # Ensure text is extracted and cached
+                    document_text = self._get_cached_text(pdf_file, extractor_name, extraction_model)
+                    if document_text is None:
+                        continue
 
-                    # B. Word count check to prevent processing junk
-                    with open(payload_file, "r", encoding="utf-8") as f:
-                        word_count = len(f.read().split())
+                    word_count = len(document_text.split())
                     if word_count <= 70:
-                        print(f"❌ Failed: {pdf_file.name} - Document too small ({word_count} words)")
+                        print(f"❌ Skipped: {pdf_file.name} — too small ({word_count} words)")
                         continue
 
-                    print(f"\n--- Booting ISOLATED worker: {pdf_file.name} | {real_extractor_name} | {model_name} ---")
-                    
-                    # C. Launch the sacrificial worker process
-                    worker_script = Path(__file__).parent / "isolated_worker.py"
-                    subprocess.run([
-                        sys.executable, # Uses the current python environment safely
-                        str(worker_script), 
-                        str(payload_file), 
-                        model_name, 
-                        str(worker_output_file)
-                    ])
-                    
-                    # D. Worker is dead. VRAM is perfectly flushed. Reconstruct results.
-                    if not worker_output_file.exists():
-                        print(f"❌ Failed: {pdf_file.name} - Worker crashed catastrophically without returning data.")
-                        continue
-                        
-                    with open(worker_output_file, "r", encoding="utf-8") as f:
-                        worker_data = json.load(f)
-                    
-                    result = ExtractionResult(
-                        pdf_file=str(pdf_file), 
-                        extractor_name=real_extractor_name, 
-                        llm_provider="local", 
-                        llm_model=model_name,
-                        extraction_time=time.time() - start_time,
-                        success=worker_data["success"],
-                        error=worker_data.get("error"),
-                        extracted_data=worker_data.get("data"),
-                        timestamp=datetime.now().isoformat(),
-                        ttft_seconds=worker_data.get("token_usage", {}).get('ttft_seconds'),
-                        generation_seconds=worker_data.get("token_usage", {}).get('generation_seconds'),
-                        total_inference_seconds=worker_data.get("token_usage", {}).get('total_inference_seconds'),
-                        input_tokens=worker_data.get("token_usage", {}).get('input', 0),
-                        output_tokens=worker_data.get("token_usage", {}).get('output', 0),
-                        total_tokens=worker_data.get("token_usage", {}).get('total', 0),
-                        energy_kwh=worker_data.get("emissions", {}).get('energy_kwh'),
-                        co2_kg=worker_data.get("emissions", {}).get('co2_kg'),
-                        cpu_energy_kwh=worker_data.get("emissions", {}).get('cpu_energy_kwh'),
-                        gpu_energy_kwh=worker_data.get("emissions", {}).get('gpu_energy_kwh'),
-                        ram_energy_kwh=worker_data.get("emissions", {}).get('ram_energy_kwh'),
-                        energy_source=worker_data.get("emissions", {}).get('energy_source')
+                    real_extractor_name = self.text_cache[(str(pdf_file), extractor_name)][1]
+                    print(f"\n--- LOCAL: {pdf_file.name} | {real_extractor_name} | {model_name} ---")
+
+                    if self._reload_per_call:
+                        # Per-call: start fresh server for each inference
+                        server.start(model_path)
+                        provider = LlamaCppProvider(server.base_url, model_name)
+
+                    start_time = time.time()
+                    result = self._run_extraction_with_provider(
+                        pdf_path=pdf_file,
+                        extractor_name=real_extractor_name,
+                        provider=provider,
+                        extraction_model=extraction_model,
                     )
-                    
-                    # Clean up the temp JSON file
-                    worker_output_file.unlink(missing_ok=True)
-                    
+                    # Overwrite extraction_time to include server start if reload_per_call
+                    if self._reload_per_call:
+                        result = result.model_copy(
+                            update={"extraction_time": time.time() - start_time}
+                        )
+
+                    if self._reload_per_call:
+                        server.stop()
+
                     all_results[str(pdf_file)].append(result)
                     filepath = self.scorer.save_result(result)
-                    
-                    if result.success:
-                        print(f"✓ Success: {pdf_file.name} saved to {filepath.name}")
-                    else:
-                        print(f"❌ Failed: {pdf_file.name} - {result.error}")
-        
+                    self._print_result(result, filepath)
+
+            if not self._reload_per_call:
+                server.stop()
+
         return all_results
 
     def _run_extraction_with_provider(
@@ -273,77 +225,84 @@ class TestRunner:
         provider,
         extraction_model: type
     ) -> ExtractionResult:
-        """Internal helper strictly for Cloud models (EcoLogits tracking built into provider)"""
+        """Run extraction for one PDF with an already-initialised provider."""
         start_time = time.time()
         llm_provider = provider.name
         llm_model = provider.model
-        
+
         try:
-            # 1. STANDARDIZED PAYLOAD EXTRACTION
+            # 1. Text extraction with caching
             cache_key = (str(pdf_path), extractor_name)
-            
+
             if cache_key in self.text_cache:
                 document_text, real_extractor_name = self.text_cache[cache_key]
-                print(f"[Extractor] Using cached text for {pdf_path.name}")
+                print(f"[Extractor] Cache hit for {pdf_path.name}")
             else:
                 extractor = MarkdownExtractor()
                 if hasattr(extractor, 'set_extraction_model'):
                     extractor.set_extraction_model(extraction_model)
-                
+
                 document_text = extractor.extract_text(pdf_path)
                 real_extractor_name = extractor.name
                 self.text_cache[cache_key] = (document_text, real_extractor_name)
-                print(f"[Extractor] Extracted document text with {len(document_text.split())} words")
-                
+                print(f"[Extractor] {pdf_path.name}: {len(document_text.split())} words")
+
                 debug_dir = Path(__file__).parent.parent / "debug_payloads"
                 debug_dir.mkdir(exist_ok=True)
                 debug_file = debug_dir / f"{pdf_path.stem}_{real_extractor_name}.txt"
                 with open(debug_file, "w", encoding="utf-8") as f:
                     f.write(document_text)
 
-            # 2. Word count check
+            # 2. Word count guard
             word_count = len(document_text.split())
             if word_count <= 70:
                 raise ValueError(f"Document too small for scientific comparison ({word_count} words)")
 
-            # 3. Cloud LLM Inference (EcoLogits tracks this automatically via wrapper)
-            extracted, token_usage = provider.extract_structured_data(text=document_text, schema=extraction_model)
+            # 3. LLM inference
+            extracted, token_usage = provider.extract_structured_data(
+                text=document_text,
+                schema=extraction_model
+            )
 
-            # 4. Finalization
+            # 4. Build result
             extraction_time = time.time() - start_time
             return ExtractionResult(
-                pdf_file=str(pdf_path), 
-                extractor_name=real_extractor_name, 
-                llm_provider=llm_provider, 
+                pdf_file=str(pdf_path),
+                extractor_name=real_extractor_name,
+                llm_provider=llm_provider,
                 llm_model=llm_model,
                 extraction_time=extraction_time,
                 ttft_seconds=token_usage.get('ttft_seconds'),
                 generation_seconds=token_usage.get('generation_seconds'),
                 total_inference_seconds=token_usage.get('total_inference_seconds'),
-                success=True, 
-                extracted_data=extracted.model_dump(), 
+                success=True,
+                extracted_data=extracted.model_dump(),
                 timestamp=datetime.now().isoformat(),
-                input_tokens=token_usage.get('input', 0), 
-                output_tokens=token_usage.get('output', 0), 
+                input_tokens=token_usage.get('input', 0),
+                output_tokens=token_usage.get('output', 0),
                 total_tokens=token_usage.get('total', 0),
                 energy_kwh=token_usage.get('energy_kwh'),
                 co2_kg=token_usage.get('co2_kg'),
-                energy_source=token_usage.get('energy_source')
+                cpu_energy_kwh=token_usage.get('cpu_energy_kwh'),
+                gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
+                ram_energy_kwh=token_usage.get('ram_energy_kwh'),
+                energy_source=token_usage.get('energy_source'),
             )
+
         except Exception as e:
             from extraction_framework.llm_providers.base_provider import ExtractionError
             token_usage = getattr(e, 'token_usage', {})
             raw_content = getattr(e, 'raw_content', None)
             extracted_data = {"raw_content": raw_content} if raw_content else None
-            
+
             return ExtractionResult(
-                pdf_file=str(pdf_path), 
-                extractor_name=extractor_name, 
-                llm_provider=llm_provider, 
-                llm_model=llm_model, 
-                extraction_time=time.time() - start_time, 
-                success=False, 
-                error=str(e), 
+                pdf_file=str(pdf_path),
+                extractor_name=extractor_name,
+                llm_provider=llm_provider,
+                llm_model=llm_model,
+                extraction_time=time.time() - start_time,
+                success=False,
+                error=str(e),
                 extracted_data=extracted_data,
                 timestamp=datetime.now().isoformat(),
                 ttft_seconds=token_usage.get('ttft_seconds'),
@@ -354,9 +313,49 @@ class TestRunner:
                 total_tokens=token_usage.get('total', 0),
                 energy_kwh=token_usage.get('energy_kwh'),
                 co2_kg=token_usage.get('co2_kg'),
-                energy_source=token_usage.get('energy_source')
+                cpu_energy_kwh=token_usage.get('cpu_energy_kwh'),
+                gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
+                ram_energy_kwh=token_usage.get('ram_energy_kwh'),
+                energy_source=token_usage.get('energy_source'),
             )
 
+    def _get_cached_text(
+        self,
+        pdf_path: Path,
+        extractor_name: str,
+        extraction_model: type
+    ) -> Optional[str]:
+        """Return cached extracted text, extracting and caching if not yet seen."""
+        cache_key = (str(pdf_path), extractor_name)
+        if cache_key in self.text_cache:
+            return self.text_cache[cache_key][0]
+
+        try:
+            extractor = MarkdownExtractor()
+            if hasattr(extractor, 'set_extraction_model'):
+                extractor.set_extraction_model(extraction_model)
+            document_text = extractor.extract_text(pdf_path)
+            self.text_cache[cache_key] = (document_text, extractor.name)
+
+            debug_dir = Path(__file__).parent.parent / "debug_payloads"
+            debug_dir.mkdir(exist_ok=True)
+            debug_file = debug_dir / f"{pdf_path.stem}_{extractor.name}.txt"
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(document_text)
+
+            return document_text
+        except Exception as e:
+            print(f"❌ Extraction failed for {pdf_path.name}: {e}")
+            return None
+
+    @staticmethod
+    def _print_result(result: ExtractionResult, filepath: Path) -> None:
+        name = Path(result.pdf_file).name
+        if result.success:
+            print(f"✓ {name} saved to {filepath.name}")
+        else:
+            print(f"❌ {name} — {result.error}")
+
+
 if __name__ == "__main__":
-    # Standard CLI check remains exactly the same...
     pass

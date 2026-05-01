@@ -257,11 +257,6 @@
             </div>
             
             <div class="form-group">
-                <label>PDF Extractors</label>
-                <select id="extractorSelect" multiple size="4"></select>
-            </div>
-            
-            <div class="form-group">
                 <label>LLM Provider (Ctrl+Click for multiple selection)</label>
                 <select id="providerSelect" multiple size="3" onchange="updateModels()"></select>
             </div>
@@ -334,20 +329,7 @@
                 
                 config = await response.json();
                 debugLog(`Config loaded successfully`, 'success');
-                
-                // Populate extractors
-                const extractorSelect = document.getElementById('extractorSelect');
-                extractorSelect.innerHTML = '';
-                
-                if (config.extractors && Array.isArray(config.extractors)) {
-                    config.extractors.forEach(ext => {
-                        const option = document.createElement('option');
-                        option.value = ext;
-                        option.textContent = ext;
-                        extractorSelect.appendChild(option);
-                    });
-                }
-                
+
                 // Populate providers
                 const providerSelect = document.getElementById('providerSelect');
                 providerSelect.innerHTML = '';
@@ -416,13 +398,12 @@
         async function runTest() {
             const pdfSelect = document.getElementById('pdfSelect');
             const pdfFiles = Array.from(pdfSelect.selectedOptions).map(opt => opt.value);
-            const extractorSelect = document.getElementById('extractorSelect');
-            const extractors = Array.from(extractorSelect.selectedOptions).map(opt => opt.value);
+            const extractors = config.extractors && config.extractors.length > 0 ? [config.extractors[0]] : ['PyMuPDF4LLM'];
             const modelSelect = document.getElementById('modelSelect');
             const models = Array.from(modelSelect.selectedOptions).map(opt => JSON.parse(opt.value));
-            
-            if (pdfFiles.length === 0 || extractors.length === 0 || models.length === 0) {
-                alert('Select at least: 1 file, 1 extractor and 1 model');
+
+            if (pdfFiles.length === 0 || models.length === 0) {
+                alert('Select at least: 1 file and 1 model');
                 return;
             }
             

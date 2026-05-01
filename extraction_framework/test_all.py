@@ -16,7 +16,7 @@ import extraction_framework.console
 from extraction_framework.test_runner import TestRunner
 from extraction_framework.llm_providers import get_all_providers_config
 from extraction_framework.extractors import get_all_extractors
-from Test.modello import BachelorProefModel
+from extraction_framework.Test.modello import BachelorProefModel
 
 # --- CONFIGURATION ---
 # Set to True/False to enable/disable provider categories

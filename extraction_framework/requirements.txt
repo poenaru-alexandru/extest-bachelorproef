@@ -6,6 +6,7 @@ Pillow>=10.0.0
 
 # LLM Providers
 huggingface_hub
+openai>=1.0.0
 
 # Data Validation
 pydantic>=2.0.0
@@ -19,7 +20,3 @@ python-dotenv>=1.0.0
 tqdm>=4.65.0
 codecarbon
 ecologits
-
-
-
-llama-cpp-python -C cmake.args="-DGGML_CUDA=on -DGGML_CUDA_FORCE_DISABLE_GRAPHS=on -DCUDAToolkit_ROOT=C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2"
