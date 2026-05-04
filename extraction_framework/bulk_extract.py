@@ -33,7 +33,6 @@ def extract_all():
     fail_count = 0
 
     for pdf_path in pdf_files:
-        # Match the naming convention from test_runner.py
         debug_file = debug_dir / f"{pdf_path.stem}_{extractor.name}.txt"
         
         print(f"Extracting: {pdf_path.name} ...")

@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from codecarbon import OfflineEmissionsTracker
 from extraction_framework.llm_providers import get_provider
-from extraction_framework.Test.modello import BachelorProefModel
+from extraction_framework.Test.modello import FactuurModel
 
 def run_worker(payload_path: str, model_name: str, output_path: str):
     print(f"DEBUG: My Process ID is {os.getpid()}")
@@ -45,7 +45,7 @@ def run_worker(payload_path: str, model_name: str, output_path: str):
     try:
         extracted, token_usage = provider.extract_structured_data(
             text=document_text, 
-            schema=BachelorProefModel
+            schema=FactuurModel
         )
         success = True
         error = None

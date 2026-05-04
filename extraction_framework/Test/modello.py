@@ -7,7 +7,7 @@ class Periode(BaseModel):
     end_date: Optional[str] = None
     kwh_quantity: Optional[float] = None
 
-class BachelorProefModel(BaseModel):
+class FactuurModel(BaseModel):
     """You are an expert at extracting structured data from Italian utility bills (bollette).
     Extract the following fields and return them as JSON.
 

@@ -14,10 +14,20 @@ except ImportError:
 
 try:
     from ecologits import EcoLogits
-    from ecologits import electricity_mix_repository
     ECOLOGITS_AVAILABLE = True
 except ImportError:
     ECOLOGITS_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Regional emission factors — kgCO2eq per kWh
+# Update these from your source (e.g. nowtricity.com) and note the snapshot date.
+# ---------------------------------------------------------------------------
+EMISSION_FACTOR_ITA = 0.300   # Italy
+EMISSION_FACTOR_BEL = 0.200   # Belgium
+EMISSION_FACTOR_FRA = 0.100   # France
+EMISSION_FACTOR_DEU = 0.400   # Germany
+EMISSION_FACTOR_USA = 0.500   # USA
+EMISSION_FACTOR_WOR = 0.150   # World average
 
 
 class HuggingFaceProvider(BaseLLMProvider):
@@ -91,13 +101,24 @@ class HuggingFaceProvider(BaseLLMProvider):
                 # 2. Exact Token Usage Tracking (Yielded in the final chunk)
                 usage = chunk.get("usage", None) if isinstance(chunk, dict) else getattr(chunk, "usage", None)
                 if usage:
-                    input_tokens = getattr(usage, "prompt_tokens", input_tokens)
-                    output_tokens = getattr(usage, "completion_tokens", output_tokens)
+                    if isinstance(usage, dict):
+                        input_tokens = usage.get("prompt_tokens", input_tokens)
+                        output_tokens = usage.get("completion_tokens", output_tokens)
+                    else:
+                        input_tokens = getattr(usage, "prompt_tokens", input_tokens)
+                        output_tokens = getattr(usage, "completion_tokens", output_tokens)
 
                 # 3. EcoLogits Tracking (Calculated incrementally, complete on final chunk)
+                # Uses usage-phase only (electricity during inference) — excludes embodied carbon
+                # (hardware manufacturing). impacts.usage.energy has no embodied component;
+                # impacts.energy is the total and would inflate CO2 numbers.
                 if hasattr(chunk, 'impacts') and chunk.impacts:
+                    usage = getattr(chunk.impacts, "usage", None)
+                    energy_val = getattr(usage, "energy", None) if usage else None
+                    gwp_val = getattr(usage, "gwp", None) if usage else None
                     final_impacts = {
-                        "energy_kwh": getattr(chunk.impacts.energy, "value", None),
+                        "energy_kwh": energy_val.mean if hasattr(energy_val, "mean") else energy_val,
+                        "co2_kg": gwp_val.mean if hasattr(gwp_val, "mean") else gwp_val,
                     }
                                             
         except Exception as stream_e:
@@ -126,35 +147,34 @@ class HuggingFaceProvider(BaseLLMProvider):
         total_time = end_time - start_time
         gen_time = total_time - (ttft or 0)
         
+        base_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
+
+        regional_emissions = {}
+        if base_energy_kwh is not None:
+            for zone, factor in [
+                ("ITA", EMISSION_FACTOR_ITA),
+                ("BEL", EMISSION_FACTOR_BEL),
+                ("FRA", EMISSION_FACTOR_FRA),
+                ("DEU", EMISSION_FACTOR_DEU),
+                ("USA", EMISSION_FACTOR_USA),
+                ("WOR", EMISSION_FACTOR_WOR),
+            ]:
+                regional_emissions[zone] = base_energy_kwh * factor
+
         # Compile the exact metrics
         token_usage = {
             'ttft_seconds': ttft,
             'generation_seconds': gen_time,
             'total_inference_seconds': total_time,
-            'input': input_tokens,          # Exact count from API
-            'output': output_tokens,        # Exact count from API
+            'input': input_tokens,
+            'output': output_tokens,
             'total': input_tokens + output_tokens,
-            'ecologits_impacts': final_impacts # Structured emissions data
+            'energy_kwh': base_energy_kwh,
+            'co2_kg': final_impacts.get("co2_kg") if final_impacts else None,
+            'energy_source': 'ecologits' if final_impacts else None,
+            'ecologits_impacts': final_impacts,
+            'regional_cloud_projections': regional_emissions if regional_emissions else None,
         }
-
-        base_energy_kwh = final_impacts["energy_kwh"]
-
-        target_regions = ["ITA", "FRA", "USA", "WOR"] # Italy, France, USA, World Average
-
-        regional_emissions = {}
-
-        # 3. Calculate the hypothetical emissions for each region
-        for zone in target_regions:
-            # Fetch the specific grid data for the region
-            mix = electricity_mix_repository.electricity_mixes.find_electricity_mix(zone=zone)
-            
-            if mix:
-                # Multiply the constant energy by the regional GWP multiplier
-                calculated_gwp = base_energy_kwh * mix.gwp
-                regional_emissions[zone] = calculated_gwp
-
-        # 4. Add this context to your final payload
-        token_usage["regional_cloud_projections"] = regional_emissions
                 
         # Clean and parse the accumulated JSON
         clean_json = accumulated_content.strip()

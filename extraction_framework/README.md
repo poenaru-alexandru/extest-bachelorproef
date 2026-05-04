@@ -40,7 +40,7 @@ git clone https://github.com/ggml-org/llama.cpp
 cd llama.cpp
 cmake -B build \
   -DGGML_CUDA=ON \
-  -DCMAKE_CUDA_ARCHITECTURES=89   # pas aan naar de compute capability van de server-GPU
+  -DCMAKE_CUDA_ARCHITECTURES=89   # pas aan naar de compute capability van de GPU
 cmake --build build --config Release -j$(nproc)
 # Binary staat in: build/bin/llama-server
 # Optioneel: sudo cp build/bin/llama-server /usr/local/bin/
@@ -144,13 +144,19 @@ python app.py
 # Opent op http://localhost:5000
 ```
 
-### CLI-batchrun (alle PDF's × alle modellen)
+### CLI — één benchmark-pass (alle PDF's × alle modellen)
 
 ```bash
-python test_all.py
+python run_benchmark.py
 ```
 
-Resultaten worden per sessie opgeslagen in `results/results_YYYYMMDD_HHMMSS/` als JSON.
+### CLI — herhaalde benchmark (N passes achter elkaar)
+
+```bash
+python run_benchmark_loop.py   # pas N_RUNS bovenin het script aan
+```
+
+Elke pass krijgt een eigen sessie in `results/results_YYYYMMDD_HHMMSS/` (JSON) én een `run_number` (1..N) in de SQLite-database, zodat je achteraf eenvoudig over alle runs kunt aggregeren.
 
 ---
 
@@ -165,14 +171,18 @@ extraction_framework/
 │   ├── local_server_manager.py   # Start/stop llama-server subprocess
 │   └── base_provider.py          # Abstracte basisklasse + promptbuilder
 ├── web_ui/app.py             # Flask-interface (poort 5000)
-├── test_runner.py            # Hoofdorchestrator
-├── test_all.py               # CLI-batchrun
+├── benchmark_runner.py       # Hoofdorchestrator (BenchmarkRunner)
+├── run_benchmark.py          # CLI: één volledige benchmark-pass
+├── run_benchmark_loop.py     # CLI: N passes achter elkaar (N_RUNS configureerbaar)
 ├── scoring.py                # ExtractionResult + validatiescoring
+├── results_db.py             # SQLite-persistentielaag (results/results.db)
 ├── ground_truth.py           # Beheer van referentiedata
 ├── Test/
-│   ├── modello.py            # Pydantic-extractieschema (BachelorProefModel)
+│   ├── modello.py            # Pydantic-extractieschema (FactuurModel)
 │   └── *.pdf                 # Testdocumenten
-└── results/                  # Uitvoer per sessie (JSON)
+└── results/
+    ├── results.db            # SQLite: alle runs, alle sessies
+    └── results_YYYYMMDD_HHMMSS/  # JSON per sessie
 ```
 
 ---

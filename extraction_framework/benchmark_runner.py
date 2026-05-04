@@ -1,10 +1,9 @@
-"""Main test runner orchestrating all extraction strategies"""
+"""Orchestrates extraction benchmarks across PDF files and LLM configurations."""
 import os
 import sys
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-import time
 from datetime import datetime
 
 # Add parent directory to path for imports
@@ -19,9 +18,10 @@ from extraction_framework.llm_providers import get_provider, resolve_local_model
 from extraction_framework.llm_providers.local_server_manager import LocalServerManager
 from extraction_framework.llm_providers.llama_cpp_provider import LlamaCppProvider
 from extraction_framework.scoring import ResultScorer, ExtractionResult
+from extraction_framework.results_db import ResultsDB
 import logging
 
-from extraction_framework.Test.modello import BachelorProefModel
+from extraction_framework.Test.modello import FactuurModel
 
 try:
     from ecologits import EcoLogits
@@ -34,8 +34,8 @@ try:
         custom_models = [
             {
                 'provider': 'huggingface_hub',
-                'name': 'Qwen/Qwen2.5-7B-Instruct-Turbo',
-                'architecture': {'type': 'dense', 'parameters': 7.61}
+                'name': 'qwen/qwen3-vl-8b-instruct',
+                'architecture': {'type': 'dense', 'parameters': 9}
             },
             {
                 'provider': 'huggingface_hub',
@@ -60,8 +60,8 @@ except ImportError:
     ECOLOGITS_AVAILABLE = False
 
 
-class TestRunner:
-    """Run extraction tests with various configurations"""
+class BenchmarkRunner:
+    """Runs extraction benchmarks across PDF files and LLM configurations."""
 
     def __init__(
         self,
@@ -70,7 +70,8 @@ class TestRunner:
     ):
         self.results_dir = results_dir or Path(__file__).parent / "results"
         self.ground_truth_dir = ground_truth_dir or Path(__file__).parent / "ground_truth"
-        self.scorer = ResultScorer(self.results_dir)
+        db = ResultsDB(self.results_dir / "results.db")
+        self.scorer = ResultScorer(self.results_dir, db=db)
         self.text_cache = {}  # (pdf_path, extractor_name) -> (text, real_extractor_name)
 
         # When True: load → infer → unload for every single (pdf × model) call.
@@ -84,7 +85,7 @@ class TestRunner:
         llm_provider: str,
         llm_model: Optional[str] = None,
         llm_api_key: Optional[str] = None,
-        extraction_model: Optional[type] = BachelorProefModel,
+        extraction_model: Optional[type] = FactuurModel,
         use_preselection: bool = False
     ) -> ExtractionResult:
         """Run a single cloud extraction test by instantiating a temporary provider."""
@@ -106,7 +107,6 @@ class TestRunner:
                 extractor_name=extractor_name,
                 llm_provider=llm_provider,
                 llm_model=llm_model or "unknown",
-                extraction_time=0,
                 success=False,
                 error=f"Initialization error: {str(e)}",
                 timestamp=datetime.now().isoformat()
@@ -117,7 +117,8 @@ class TestRunner:
         pdf_files: List[Path],
         extractors: Optional[List[str]] = None,
         llm_configs: Optional[List[Dict[str, str]]] = None,
-        extraction_model: Optional[type] = BachelorProefModel
+        extraction_model: Optional[type] = FactuurModel,
+        run_number: Optional[int] = None
     ) -> Dict[str, List[ExtractionResult]]:
         """Run complete test suite across all PDF files and model configurations."""
         if extractors is None:
@@ -126,8 +127,10 @@ class TestRunner:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         session_results_dir = self.results_dir / f"results_{timestamp}"
         session_results_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[TestRunner] Session results: {session_results_dir.name}")
-        print(f"[TestRunner] Model reload mode: {'per-call' if self._reload_per_call else 'per-model batch'}")
+
+        run_label = f" (run {run_number})" if run_number is not None else ""
+        print(f"[BenchmarkRunner] Session results: {session_results_dir.name}{run_label}")
+        print(f"[BenchmarkRunner] Model reload mode: {'per-call' if self._reload_per_call else 'per-model batch'}")
 
         self.scorer.results_dir = session_results_dir
 
@@ -139,6 +142,14 @@ class TestRunner:
         # ---------------------------------------------------------
         # 1. CLOUD MODELS
         # ---------------------------------------------------------
+
+        # Pre-extract all texts before any cloud inference so timing is clean
+        if cloud_configs:
+            print("[BenchmarkRunner] Pre-extracting texts for cloud models...")
+            for pdf_file in pdf_files:
+                for extractor_name in extractors:
+                    self._get_cached_text(pdf_file, extractor_name, extraction_model)
+
         for pdf_file in pdf_files:
             for llm_config in cloud_configs:
                 for extractor_name in extractors:
@@ -152,12 +163,20 @@ class TestRunner:
                         extraction_model=extraction_model
                     )
                     all_results[str(pdf_file)].append(result)
-                    filepath = self.scorer.save_result(result)
+                    filepath = self.scorer.save_result(result, run_number=run_number)
                     self._print_result(result, filepath)
 
         # ---------------------------------------------------------
         # 2. LOCAL MODELS (via llama-server)
         # ---------------------------------------------------------
+
+        # Pre-extract all texts before starting any server so inference timing is clean
+        if local_configs:
+            print("[BenchmarkRunner] Pre-extracting texts...")
+            for pdf_file in pdf_files:
+                for extractor_name in extractors:
+                    self._get_cached_text(pdf_file, extractor_name, extraction_model)
+
         server = LocalServerManager()
 
         for llm_config in local_configs:
@@ -165,52 +184,43 @@ class TestRunner:
             model_path = resolve_local_model_path(model_name)
 
             print(f"\n{'#'*60}")
-            print(f"LOCAL: {model_name}  |  reload_per_call={self._reload_per_call}")
+            print(f"LOCAL: {model_name}  |  reload_per_call={self._reload_per_call}{run_label}")
             print(f"{'#'*60}")
 
             if not self._reload_per_call:
-                # Per-model batch: start server once for all PDFs
                 server.start(model_path)
                 provider = LlamaCppProvider(server.base_url, model_name)
 
             for pdf_file in pdf_files:
                 for extractor_name in extractors:
-                    # Ensure text is extracted and cached
-                    document_text = self._get_cached_text(pdf_file, extractor_name, extraction_model)
+                    document_text, real_extractor_name = self.text_cache.get(
+                        (str(pdf_file), extractor_name), (None, extractor_name)
+                    )
                     if document_text is None:
                         continue
 
-                    word_count = len(document_text.split())
-                    if word_count <= 70:
-                        print(f"❌ Skipped: {pdf_file.name} — too small ({word_count} words)")
+                    if len(document_text.split()) <= 70:
+                        print(f"❌ Skipped: {pdf_file.name} — too small")
                         continue
 
-                    real_extractor_name = self.text_cache[(str(pdf_file), extractor_name)][1]
                     print(f"\n--- LOCAL: {pdf_file.name} | {real_extractor_name} | {model_name} ---")
 
                     if self._reload_per_call:
-                        # Per-call: start fresh server for each inference
                         server.start(model_path)
                         provider = LlamaCppProvider(server.base_url, model_name)
 
-                    start_time = time.time()
                     result = self._run_extraction_with_provider(
                         pdf_path=pdf_file,
                         extractor_name=real_extractor_name,
                         provider=provider,
                         extraction_model=extraction_model,
                     )
-                    # Overwrite extraction_time to include server start if reload_per_call
-                    if self._reload_per_call:
-                        result = result.model_copy(
-                            update={"extraction_time": time.time() - start_time}
-                        )
 
                     if self._reload_per_call:
                         server.stop()
 
                     all_results[str(pdf_file)].append(result)
-                    filepath = self.scorer.save_result(result)
+                    filepath = self.scorer.save_result(result, run_number=run_number)
                     self._print_result(result, filepath)
 
             if not self._reload_per_call:
@@ -226,7 +236,6 @@ class TestRunner:
         extraction_model: type
     ) -> ExtractionResult:
         """Run extraction for one PDF with an already-initialised provider."""
-        start_time = time.time()
         llm_provider = provider.name
         llm_model = provider.model
 
@@ -265,18 +274,18 @@ class TestRunner:
             )
 
             # 4. Build result
-            extraction_time = time.time() - start_time
+            extracted_dict = extracted.model_dump()
             return ExtractionResult(
                 pdf_file=str(pdf_path),
                 extractor_name=real_extractor_name,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
-                extraction_time=extraction_time,
                 ttft_seconds=token_usage.get('ttft_seconds'),
                 generation_seconds=token_usage.get('generation_seconds'),
                 total_inference_seconds=token_usage.get('total_inference_seconds'),
                 success=True,
-                extracted_data=extracted.model_dump(),
+                validation_score=self.scorer.validate_and_score(extracted_dict),
+                extracted_data=extracted_dict,
                 timestamp=datetime.now().isoformat(),
                 input_tokens=token_usage.get('input', 0),
                 output_tokens=token_usage.get('output', 0),
@@ -287,6 +296,7 @@ class TestRunner:
                 gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
                 ram_energy_kwh=token_usage.get('ram_energy_kwh'),
                 energy_source=token_usage.get('energy_source'),
+                regional_cloud_projections=token_usage.get('regional_cloud_projections'),
             )
 
         except Exception as e:
@@ -300,8 +310,8 @@ class TestRunner:
                 extractor_name=extractor_name,
                 llm_provider=llm_provider,
                 llm_model=llm_model,
-                extraction_time=time.time() - start_time,
                 success=False,
+                validation_score=0.0,
                 error=str(e),
                 extracted_data=extracted_data,
                 timestamp=datetime.now().isoformat(),
@@ -317,6 +327,7 @@ class TestRunner:
                 gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
                 ram_energy_kwh=token_usage.get('ram_energy_kwh'),
                 energy_source=token_usage.get('energy_source'),
+                regional_cloud_projections=token_usage.get('regional_cloud_projections'),
             )
 
     def _get_cached_text(

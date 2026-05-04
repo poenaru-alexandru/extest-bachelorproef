@@ -3,32 +3,39 @@ import json
 import time
 from typing import Dict, Optional, Tuple, Type
 
+import requests
 from pydantic import BaseModel
 
 from .base_provider import BaseLLMProvider, ExtractionError, build_extraction_messages
 
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
-try:
-    from codecarbon import OfflineEmissionsTracker
+    from codecarbon import EmissionsTracker
     CODECARBON_AVAILABLE = True
 except ImportError:
     CODECARBON_AVAILABLE = False
 
+# ---------------------------------------------------------------------------
+# Regional emission factors — kgCO2eq per kWh
+# Update these from your source (e.g. nowtricity.com) and note the snapshot date.
+# ---------------------------------------------------------------------------
+EMISSION_FACTOR_ITA = 0.300   # Italy
+EMISSION_FACTOR_BEL = 0.200   # Belgium
+EMISSION_FACTOR_FRA = 0.100   # France
+EMISSION_FACTOR_DEU = 0.400   # Germany
+EMISSION_FACTOR_USA = 0.500   # USA
+EMISSION_FACTOR_WOR = 0.150   # World average
+
+# Power Usage Effectiveness — multiply measured IT energy by this to get total facility energy.
+# 1.0 = bare metal / home setup (no datacenter overhead). Fill in your calculated value.
+PUE_LOCAL = 1.0
+
 
 class LlamaCppProvider(BaseLLMProvider):
-    """Talks to a running llama-server instance via its OpenAI-compatible API."""
+    """Talks to a running llama-server instance via its native HTTP API."""
 
     def __init__(self, base_url: str, model_name: str):
         super().__init__("local", model_name)
-        if not OPENAI_AVAILABLE:
-            raise ImportError("openai package not installed. Run: pip install openai")
-        # api_key is required by the openai client but ignored by llama-server
-        self._client = OpenAI(base_url=base_url, api_key="not-needed")
+        self._base_url = base_url  # e.g. http://localhost:8080/v1
 
     def extract_structured_data(
         self,
@@ -42,69 +49,61 @@ class LlamaCppProvider(BaseLLMProvider):
 
         tracker = None
         if CODECARBON_AVAILABLE:
-            tracker = OfflineEmissionsTracker(
+            tracker = EmissionsTracker(
                 project_name="local_inference",
                 measure_power_secs=0.1,
                 save_to_file=False,
                 log_level="error",
                 country_iso_code="ITA",
+                force_ram_power=20,  # 4 slots x 5W
+                pue=PUE_LOCAL,
             )
             tracker.start()
 
         start_time = time.time()
-        ttft: Optional[float] = None
-        accumulated_content = ""
-        prompt_tokens = 0
-        completion_tokens = 0
-        end_time = start_time  # fallback if stream fails before assigning
+        end_time = start_time
 
         try:
-            stream = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0,
-                stream=True,
-                stream_options={"include_usage": True},
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema.__name__,
-                        "schema": schema_json,
-                        "strict": True,
+            response = requests.post(
+                f"{self._base_url}/chat/completions",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": 0,
+                    "stream": False,
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema.__name__,
+                            "schema": schema_json,
+                            "strict": True,
+                        },
                     },
                 },
             )
-
-            for chunk in stream:
-                # Record time-to-first-token on first chunk that carries content
-                if ttft is None and chunk.choices:
-                    delta_content = chunk.choices[0].delta.content
-                    if delta_content:
-                        ttft = time.time() - start_time
-
-                if chunk.choices:
-                    delta_content = chunk.choices[0].delta.content
-                    if delta_content:
-                        accumulated_content += delta_content
-
-                # Usage arrives in the final chunk (stream_options.include_usage)
-                if chunk.usage:
-                    prompt_tokens = chunk.usage.prompt_tokens
-                    completion_tokens = chunk.usage.completion_tokens
-
+            response.raise_for_status()
             end_time = time.time()
-
+            data = response.json()
         finally:
             if tracker:
                 tracker.stop()
 
         total_time = end_time - start_time
-        gen_time = total_time - (ttft or 0)
 
+        # llama-server returns server-side timings — more accurate than client-side wall clock
+        timings = data.get("timings", {})
+        ttft = timings["prompt_ms"] / 1000 if timings.get("prompt_ms") else None
+        gen_time = timings["predicted_ms"] / 1000 if timings.get("predicted_ms") else total_time - (ttft or 0)
+
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        content = data["choices"][0]["message"]["content"]
         impacts = self._read_codecarbon(tracker)
 
         try:
-            parsed_json = json.loads(accumulated_content)
+            parsed_json = json.loads(content)
             # llama-server sometimes wraps the result under the schema class name
             class_name = schema.__name__
             if class_name in parsed_json and len(parsed_json) == 1:
@@ -116,7 +115,7 @@ class LlamaCppProvider(BaseLLMProvider):
             )
             raise ExtractionError(
                 message=f"Failed to parse LLM response: {e}",
-                raw_content=accumulated_content,
+                raw_content=content,
                 token_usage=token_usage,
             )
 
@@ -144,17 +143,32 @@ class LlamaCppProvider(BaseLLMProvider):
     def _build_token_usage(
         self, ttft, gen_time, total_time, prompt_tokens, completion_tokens, impacts
     ) -> Dict:
+        energy_kwh = impacts.get("energy_kwh")
+        co2_kg = None
+        regional = None
+        if energy_kwh is not None:
+            adjusted = energy_kwh * PUE_LOCAL
+            co2_kg = adjusted * EMISSION_FACTOR_ITA
+            regional = {
+                "ITA": adjusted * EMISSION_FACTOR_ITA,
+                "BEL": adjusted * EMISSION_FACTOR_BEL,
+                "FRA": adjusted * EMISSION_FACTOR_FRA,
+                "DEU": adjusted * EMISSION_FACTOR_DEU,
+                "USA": adjusted * EMISSION_FACTOR_USA,
+                "WOR": adjusted * EMISSION_FACTOR_WOR,
+            }
         return {
-            "ttft_seconds":            ttft,
-            "generation_seconds":      gen_time,
-            "total_inference_seconds": total_time,
-            "input":                   prompt_tokens,
-            "output":                  completion_tokens,
-            "total":                   prompt_tokens + completion_tokens,
-            "energy_kwh":              impacts.get("energy_kwh"),
-            "co2_kg":                  impacts.get("co2_kg"),
-            "cpu_energy_kwh":          impacts.get("cpu_energy_kwh"),
-            "gpu_energy_kwh":          impacts.get("gpu_energy_kwh"),
-            "ram_energy_kwh":          impacts.get("ram_energy_kwh"),
-            "energy_source":           "codecarbon" if impacts else None,
+            "ttft_seconds":               ttft,
+            "generation_seconds":         gen_time,
+            "total_inference_seconds":    total_time,
+            "input":                      prompt_tokens,
+            "output":                     completion_tokens,
+            "total":                      prompt_tokens + completion_tokens,
+            "energy_kwh":                 energy_kwh,
+            "co2_kg":                     co2_kg,
+            "cpu_energy_kwh":             impacts.get("cpu_energy_kwh"),
+            "gpu_energy_kwh":             impacts.get("gpu_energy_kwh"),
+            "ram_energy_kwh":             impacts.get("ram_energy_kwh"),
+            "energy_source":              "codecarbon" if impacts else None,
+            "regional_cloud_projections": regional,
         }

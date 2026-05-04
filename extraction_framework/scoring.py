@@ -1,5 +1,5 @@
 """Scoring and comparison system for extraction results"""
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from pathlib import Path
 from pydantic import BaseModel
 import json
@@ -22,8 +22,6 @@ class ExtractionResult(BaseModel):
     extractor_name: str
     llm_provider: str
     llm_model: str
-    extraction_time: float  # Total wall-clock time
-    
     # Streaming Telemetry
     ttft_seconds: Optional[float] = None
     generation_seconds: Optional[float] = None
@@ -37,6 +35,9 @@ class ExtractionResult(BaseModel):
     output_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
     
+    # Quality Score (rule-based structural validation, 0–100)
+    validation_score: Optional[float] = None
+
     # Sustainability Metrics
     energy_kwh: Optional[float] = None
     co2_kg: Optional[float] = None
@@ -44,6 +45,7 @@ class ExtractionResult(BaseModel):
     gpu_energy_kwh: Optional[float] = None
     ram_energy_kwh: Optional[float] = None
     energy_source: Optional[str] = None  # 'codecarbon' or 'ecologits'
+    regional_cloud_projections: Optional[Dict[str, float]] = None
 
 
 class ComparisonResult(BaseModel):
@@ -54,18 +56,18 @@ class ComparisonResult(BaseModel):
     field_scores: List[FieldScore]
     best_extraction: Optional[ExtractionResult] = None
     consensus_data: Optional[Dict[str, Any]] = None
-    avg_extraction_time: float
 
 
 class ResultScorer:
     """Score and compare extraction results"""
-    
-    def __init__(self, results_dir: Path):
+
+    def __init__(self, results_dir: Path, db=None):
         self.results_dir = Path(results_dir)
         self.results_dir.mkdir(parents=True, exist_ok=True)
-    
-    def save_result(self, result: ExtractionResult) -> Path:
-        """Save extraction result to file"""
+        self.db = db  # optional ResultsDB instance
+
+    def save_result(self, result: ExtractionResult, run_number: Optional[int] = None) -> Path:
+        """Save extraction result to JSON file and, if a DB is attached, to SQLite."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         pdf_name = Path(result.pdf_file).stem
         
@@ -90,7 +92,11 @@ class ResultScorer:
         filepath = self.results_dir / filename
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(result.model_dump(), f, indent=2, ensure_ascii=False)
-        
+
+        if self.db is not None:
+            session_id = self.results_dir.name  # e.g. "results_20240101_120000"
+            self.db.insert(result, session_id, run_number=run_number)
+
         return filepath
     
     def load_results_for_pdf(self, pdf_file: str) -> List[ExtractionResult]:
@@ -168,7 +174,6 @@ class ResultScorer:
                 total_extractions=len(results),
                 successful_extractions=0,
                 field_scores=[],
-                avg_extraction_time=sum(r.extraction_time for r in results) / len(results)
             )
         
         # Calculate scores for each successful extraction using rule-based logic
@@ -205,7 +210,6 @@ class ResultScorer:
             field_scores=field_scores,
             best_extraction=best_result,
             consensus_data=best_result.extracted_data if best_result else {},
-            avg_extraction_time=sum(r.extraction_time for r in successful) / len(successful)
         )
     
     def calculate_similarity(self, extracted: Any, reference: Any) -> float:

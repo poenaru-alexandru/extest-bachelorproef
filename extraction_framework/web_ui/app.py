@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 # Initialize global colorized print override
 import extraction_framework.console
 
-from extraction_framework.test_runner import TestRunner
+from extraction_framework.benchmark_runner import BenchmarkRunner
 from extraction_framework.ground_truth import GroundTruthManager
 from extraction_framework.extractors import get_all_extractors
 from extraction_framework.llm_providers import get_available_providers
@@ -31,7 +31,7 @@ TEST_DIR = Path(__file__).parent.parent / "Test"
 RESULTS_DIR = BASE_DIR / "extraction_framework" / "results"
 GT_DIR = BASE_DIR / "extraction_framework" / "ground_truth"
 
-runner = TestRunner(results_dir=RESULTS_DIR, ground_truth_dir=GT_DIR)
+runner = BenchmarkRunner(results_dir=RESULTS_DIR, ground_truth_dir=GT_DIR)
 gt_manager = GroundTruthManager(GT_DIR)
 
 
