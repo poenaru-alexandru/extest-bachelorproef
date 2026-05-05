@@ -1,3 +1,4 @@
+import sys
 import builtins
 from colorama import init, Fore, Style
 
@@ -5,6 +6,7 @@ from colorama import init, Fore, Style
 init(autoreset=True)
 
 _original_print = builtins.print
+_use_color = sys.stdout.isatty()
 
 def colored_print(*args, **kwargs):
     if not args:
@@ -12,6 +14,10 @@ def colored_print(*args, **kwargs):
         return
 
     text = str(args[0])
+
+    if not _use_color:
+        _original_print(text, *args[1:], **kwargs)
+        return
     
     # Categorize by keywords
     if "ERROR" in text or "Error" in text or "❌" in text or "failed" in text.lower():

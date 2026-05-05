@@ -54,7 +54,6 @@ class LlamaCppProvider(BaseLLMProvider):
                 measure_power_secs=0.1,
                 save_to_file=False,
                 log_level="error",
-                country_iso_code="ITA",
                 force_ram_power=20,  # 4 slots x 5W
                 pue=PUE_LOCAL,
             )
@@ -134,7 +133,6 @@ class LlamaCppProvider(BaseLLMProvider):
         d = getattr(tracker, "final_emissions_data", None)
         return {
             "energy_kwh":     d.energy_consumed if d else None,
-            "co2_kg":         d.emissions       if d else None,
             "cpu_energy_kwh": d.cpu_energy      if d else None,
             "gpu_energy_kwh": d.gpu_energy      if d else None,
             "ram_energy_kwh": d.ram_energy      if d else None,

@@ -156,3 +156,4 @@ Test/**/*/*.json
 extracted_data/
 
 **.pdf
+**.txt

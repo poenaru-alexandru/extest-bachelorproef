@@ -30,6 +30,14 @@ EMISSION_FACTOR_USA = 0.500   # USA
 EMISSION_FACTOR_WOR = 0.150   # World average
 
 
+def _impact_to_float(impact) -> Optional[float]:
+    """Extract a plain float from an ecologits Energy/GWP BaseImpact object."""
+    if impact is None:
+        return None
+    v = getattr(impact, "value", impact)  # BaseImpact.value is ValueOrRange
+    return float(v.mean) if hasattr(v, "mean") else float(v)
+
+
 class HuggingFaceProvider(BaseLLMProvider):
     """Hugging Face provider using official huggingface_hub for accurate EcoLogits tracking"""
     
@@ -117,8 +125,8 @@ class HuggingFaceProvider(BaseLLMProvider):
                     energy_val = getattr(usage, "energy", None) if usage else None
                     gwp_val = getattr(usage, "gwp", None) if usage else None
                     final_impacts = {
-                        "energy_kwh": energy_val.mean if hasattr(energy_val, "mean") else energy_val,
-                        "co2_kg": gwp_val.mean if hasattr(gwp_val, "mean") else gwp_val,
+                        "energy_kwh": _impact_to_float(energy_val),
+                        "co2_kg": _impact_to_float(gwp_val),
                     }
                                             
         except Exception as stream_e:
