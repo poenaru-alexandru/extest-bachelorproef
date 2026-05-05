@@ -1,5 +1,6 @@
 """Provider for local GGUF models via native llama-server HTTP API."""
 import json
+import logging
 import time
 from typing import Dict, Optional, Tuple, Type
 
@@ -14,6 +15,7 @@ try:
 except ImportError:
     CODECARBON_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Regional emission factors — kgCO2eq per kWh
 # Update these from your source (e.g. nowtricity.com) and note the snapshot date.
@@ -53,7 +55,7 @@ class LlamaCppProvider(BaseLLMProvider):
                 project_name="local_inference",
                 measure_power_secs=0.1,
                 save_to_file=False,
-                log_level="error",
+                logging_logger=logger,
                 force_ram_power=20,  # 4 slots x 5W
                 pue=PUE_LOCAL,
             )

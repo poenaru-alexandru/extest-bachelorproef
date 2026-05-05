@@ -66,11 +66,15 @@ class LocalServerManager:
             cmd.append("--verbose")
 
         print(f"[LocalServer] Starting: {Path(model_path).name}")
+        # Copy current env and inject the CUDA 12.8 paths
+        server_env = os.environ.copy()
+        server_env["LD_LIBRARY_PATH"] = f"/usr/local/cuda-12.8/lib64:{server_env.get('LD_LIBRARY_PATH', '')}"
+
         self._process = subprocess.Popen(
             cmd,
+            env=server_env, # <--- Add this
             stdout=subprocess.DEVNULL,
-            # verbose=True → inherit stderr so logs stream to terminal in real time
-            # verbose=False → pipe stderr so crash output can be included in the exception
+            verbose=True,
             stderr=None if self._verbose else subprocess.PIPE,
         )
         self._wait_for_health(startup_timeout)
