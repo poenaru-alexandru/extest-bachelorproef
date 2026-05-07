@@ -123,7 +123,7 @@ def run(run_number: Optional[int] = None, runner: Optional[BenchmarkRunner] = No
 
     d = getattr(tracker, "final_emissions_data", None)
     emissions_data = {
-        "energy_kwh":     d.energy_consumed if d else None,
+        "raw_energy_kwh": d.energy_consumed if d else None,  # session-level, no pue passed to tracker
     }
     
     # Save emissions data to PUE_RESULTS.JSON

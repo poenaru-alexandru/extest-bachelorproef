@@ -55,8 +55,10 @@ class LlamaCppProvider(BaseLLMProvider):
                 project_name="local_inference",
                 measure_power_secs=0.5,
                 save_to_file=False,
-                pue=PUE_LOCAL,
-		log_level="warning"
+                log_level="warning",
+                # pue intentionally NOT set: CodeCarbon multiplies energy_consumed by pue
+                # internally, so passing it here would pre-bake PUE into the raw reading.
+                # PUE is applied manually in _build_token_usage to keep raw and adjusted separate.
             )
             tracker.start()
 
@@ -143,19 +145,19 @@ class LlamaCppProvider(BaseLLMProvider):
     def _build_token_usage(
         self, ttft, gen_time, total_time, prompt_tokens, completion_tokens, impacts
     ) -> Dict:
-        energy_kwh = impacts.get("energy_kwh")
+        raw_energy_kwh = impacts.get("energy_kwh")  # bare IT energy: GPU+CPU+RAM, no PUE
+        energy_kwh_with_pue = raw_energy_kwh * PUE_LOCAL if raw_energy_kwh is not None else None
         co2_kg = None
         regional = None
-        if energy_kwh is not None:
-            adjusted = energy_kwh * PUE_LOCAL
-            co2_kg = adjusted * EMISSION_FACTOR_ITA
+        if energy_kwh_with_pue is not None:
+            co2_kg = energy_kwh_with_pue * EMISSION_FACTOR_ITA
             regional = {
-                "ITA": adjusted * EMISSION_FACTOR_ITA,
-                "BEL": adjusted * EMISSION_FACTOR_BEL,
-                "FRA": adjusted * EMISSION_FACTOR_FRA,
-                "DEU": adjusted * EMISSION_FACTOR_DEU,
-                "USA": adjusted * EMISSION_FACTOR_USA,
-                "WOR": adjusted * EMISSION_FACTOR_WOR,
+                "ITA": energy_kwh_with_pue * EMISSION_FACTOR_ITA,
+                "BEL": energy_kwh_with_pue * EMISSION_FACTOR_BEL,
+                "FRA": energy_kwh_with_pue * EMISSION_FACTOR_FRA,
+                "DEU": energy_kwh_with_pue * EMISSION_FACTOR_DEU,
+                "USA": energy_kwh_with_pue * EMISSION_FACTOR_USA,
+                "WOR": energy_kwh_with_pue * EMISSION_FACTOR_WOR,
             }
         return {
             "ttft_seconds":               ttft,
@@ -164,7 +166,8 @@ class LlamaCppProvider(BaseLLMProvider):
             "input":                      prompt_tokens,
             "output":                     completion_tokens,
             "total":                      prompt_tokens + completion_tokens,
-            "energy_kwh":                 energy_kwh,
+            "raw_energy_kwh":             raw_energy_kwh,
+            "energy_kwh_with_pue":        energy_kwh_with_pue,
             "co2_kg":                     co2_kg,
             "cpu_energy_kwh":             impacts.get("cpu_energy_kwh"),
             "gpu_energy_kwh":             impacts.get("gpu_energy_kwh"),

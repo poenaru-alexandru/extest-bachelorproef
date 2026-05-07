@@ -155,10 +155,15 @@ class HuggingFaceProvider(BaseLLMProvider):
         total_time = end_time - start_time
         gen_time = total_time - (ttft or 0)
         
-        base_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
+        # EcoLogits usage.energy already includes the datacenter PUE factor internally
+        # (compute: datacenter_pue × (server_energy + gpu_energy)).
+        # There is no way to retrieve the pre-PUE raw value from EcoLogits, so both
+        # raw_energy_kwh and energy_kwh_with_pue are set to the same EcoLogits value.
+        # The distinction is meaningful only for local (CodeCarbon) measurements.
+        ecologits_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
 
         regional_emissions = {}
-        if base_energy_kwh is not None:
+        if ecologits_energy_kwh is not None:
             for zone, factor in [
                 ("ITA", EMISSION_FACTOR_ITA),
                 ("BEL", EMISSION_FACTOR_BEL),
@@ -167,7 +172,7 @@ class HuggingFaceProvider(BaseLLMProvider):
                 ("USA", EMISSION_FACTOR_USA),
                 ("WOR", EMISSION_FACTOR_WOR),
             ]:
-                regional_emissions[zone] = base_energy_kwh * factor
+                regional_emissions[zone] = ecologits_energy_kwh * factor
 
         # Compile the exact metrics
         token_usage = {
@@ -177,7 +182,8 @@ class HuggingFaceProvider(BaseLLMProvider):
             'input': input_tokens,
             'output': output_tokens,
             'total': input_tokens + output_tokens,
-            'energy_kwh': base_energy_kwh,
+            'raw_energy_kwh': ecologits_energy_kwh,       # EcoLogits already embeds PUE
+            'energy_kwh_with_pue': ecologits_energy_kwh,  # same: no additional factor needed
             'co2_kg': final_impacts.get("co2_kg") if final_impacts else None,
             'energy_source': 'ecologits' if final_impacts else None,
             'ecologits_impacts': final_impacts,

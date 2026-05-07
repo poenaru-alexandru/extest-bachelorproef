@@ -39,7 +39,14 @@ class ExtractionResult(BaseModel):
     validation_score: Optional[float] = None
 
     # Sustainability Metrics
-    energy_kwh: Optional[float] = None
+    # raw_energy_kwh: bare IT energy before PUE correction
+    #   local  → CodeCarbon sum(GPU+CPU+RAM), pue NOT passed to tracker
+    #   cloud  → EcoLogits usage.energy (already includes datacenter PUE; raw not separately available)
+    # energy_kwh_with_pue: facility-level energy used for fair local↔cloud comparison
+    #   local  → raw_energy_kwh × PUE_LOCAL (1.08)
+    #   cloud  → same as raw_energy_kwh (EcoLogits already embeds PUE)
+    raw_energy_kwh: Optional[float] = None
+    energy_kwh_with_pue: Optional[float] = None
     co2_kg: Optional[float] = None
     cpu_energy_kwh: Optional[float] = None
     gpu_energy_kwh: Optional[float] = None

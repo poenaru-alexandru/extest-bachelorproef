@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS extraction_results (
     input_tokens            INTEGER,
     output_tokens           INTEGER,
     total_tokens            INTEGER,
-    energy_kwh              REAL,
+    raw_energy_kwh          REAL,
+    energy_kwh_with_pue     REAL,
     co2_kg                  REAL,
     cpu_energy_kwh          REAL,
     gpu_energy_kwh          REAL,
@@ -56,6 +57,15 @@ class ResultsDB:
             conn.execute("ALTER TABLE extraction_results ADD COLUMN regional_cloud_projections TEXT")
         if "validation_score" not in existing:
             conn.execute("ALTER TABLE extraction_results ADD COLUMN validation_score REAL")
+        if "raw_energy_kwh" not in existing:
+            conn.execute("ALTER TABLE extraction_results ADD COLUMN raw_energy_kwh REAL")
+        if "energy_kwh_with_pue" not in existing:
+            conn.execute("ALTER TABLE extraction_results ADD COLUMN energy_kwh_with_pue REAL")
+        # Backfill legacy rows: energy_kwh (old column) → raw_energy_kwh if present
+        if "energy_kwh" in existing and "raw_energy_kwh" in existing:
+            conn.execute(
+                "UPDATE extraction_results SET raw_energy_kwh = energy_kwh WHERE raw_energy_kwh IS NULL AND energy_kwh IS NOT NULL"
+            )
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -74,7 +84,7 @@ class ResultsDB:
                     ttft_seconds, generation_seconds,
                     total_inference_seconds,
                     input_tokens, output_tokens, total_tokens,
-                    energy_kwh, co2_kg,
+                    raw_energy_kwh, energy_kwh_with_pue, co2_kg,
                     cpu_energy_kwh, gpu_energy_kwh, ram_energy_kwh,
                     energy_source, regional_cloud_projections,
                     validation_score, extracted_data, timestamp
@@ -85,7 +95,7 @@ class ResultsDB:
                     ?, ?,
                     ?,
                     ?, ?, ?,
-                    ?, ?,
+                    ?, ?, ?,
                     ?, ?, ?,
                     ?, ?,
                     ?, ?, ?
@@ -106,7 +116,8 @@ class ResultsDB:
                     result.input_tokens,
                     result.output_tokens,
                     result.total_tokens,
-                    result.energy_kwh,
+                    result.raw_energy_kwh,
+                    result.energy_kwh_with_pue,
                     result.co2_kg,
                     result.cpu_energy_kwh,
                     result.gpu_energy_kwh,
