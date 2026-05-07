@@ -9,6 +9,17 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# EcoLogits MUST be initialized before huggingface_hub is imported anywhere.
+# On Linux, EcoLogits replaces the InferenceClient class in the huggingface_hub
+# namespace; any module that imported it before init() runs holds a stale reference
+# and will never see .impacts on response chunks.
+try:
+    from ecologits import EcoLogits
+    EcoLogits.init(providers=["huggingface_hub"])
+    _ECOLOGITS_PREINIT_OK = True
+except ImportError:
+    _ECOLOGITS_PREINIT_OK = False
+
 # Initialize global colorized print override
 import extraction_framework.console
 
@@ -23,10 +34,9 @@ import logging
 
 from extraction_framework.Test.modello import FactuurModel
 
-try:
-    from ecologits import EcoLogits
-    EcoLogits.init(providers=["huggingface_hub"])
+ECOLOGITS_AVAILABLE = _ECOLOGITS_PREINIT_OK
 
+if ECOLOGITS_AVAILABLE:
     try:
         from ecologits.tracers.huggingface_tracer import llm_impacts
         repo = llm_impacts.__globals__['models']
@@ -54,10 +64,6 @@ try:
         print("[EcoLogits] Successfully registered custom model aliases")
     except Exception as e:
         print(f"[EcoLogits] Warning: Could not register custom model aliases: {e}")
-
-    ECOLOGITS_AVAILABLE = True
-except ImportError:
-    ECOLOGITS_AVAILABLE = False
 
 
 class BenchmarkRunner:
