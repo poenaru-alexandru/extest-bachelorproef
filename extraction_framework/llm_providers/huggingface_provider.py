@@ -22,12 +22,12 @@ except ImportError:
 # Regional emission factors — kgCO2eq per kWh
 # Update these from your source (e.g. nowtricity.com) and note the snapshot date.
 # ---------------------------------------------------------------------------
-EMISSION_FACTOR_ITA = 0.300   # Italy
-EMISSION_FACTOR_BEL = 0.200   # Belgium
-EMISSION_FACTOR_FRA = 0.100   # France
-EMISSION_FACTOR_DEU = 0.400   # Germany
-EMISSION_FACTOR_USA = 0.500   # USA
-EMISSION_FACTOR_WOR = 0.150   # World average
+EMISSION_FACTOR_ITA = 0.28478   # Italy
+EMISSION_FACTOR_BEL = 0.14982   # Belgium
+EMISSION_FACTOR_FRA = 0.04144   # France
+EMISSION_FACTOR_DEU = 0.32965   # Germany
+EMISSION_FACTOR_USA = 0.3844   # USA
+EMISSION_FACTOR_WOR = 0.45829   # World average
 
 
 def _impact_to_float(impact) -> Optional[float]:
