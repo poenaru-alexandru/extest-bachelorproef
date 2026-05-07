@@ -20,6 +20,8 @@ from extraction_framework.llm_providers import get_all_providers_config
 from extraction_framework.extractors import get_all_extractors
 from extraction_framework.Test.modello import FactuurModel
 
+from codecarbon import EmissionsTracker
+
 # --- CONFIGURATION ---
 # Set to True/False to enable/disable provider categories
 PROVIDERS_TO_TEST = {
@@ -32,6 +34,14 @@ PROVIDERS_TO_TEST = {
 def run(run_number: Optional[int] = None, runner: Optional[BenchmarkRunner] = None) -> None:
     """Execute one full benchmark pass across all PDFs and models."""
     load_dotenv()
+
+    tracker = EmissionsTracker(
+        project_name="pue_benchmark",
+        measure_power_secs=0.5,
+        save_to_file=False,
+	log_level="warning"
+    )
+    tracker.start()
 
     BASE_DIR = Path(__file__).parent.parent
     TEST_DIR = BASE_DIR / "extraction_framework" / "Test"
@@ -95,7 +105,7 @@ def run(run_number: Optional[int] = None, runner: Optional[BenchmarkRunner] = No
         extraction_model=FactuurModel,
         run_number=run_number,
     )
-
+    
     # 5. Summary
     total_results = sum(len(results) for results in all_results.values())
     successful = sum(1 for results in all_results.values() for res in results if res.success)
@@ -108,7 +118,18 @@ def run(run_number: Optional[int] = None, runner: Optional[BenchmarkRunner] = No
     print(f"Failed: {total_results - successful}")
     print(f"Results saved to: {RESULTS_DIR}")
     print(f"{'='*60}\n")
+    if tracker:
+        tracker.stop()
 
+    d = getattr(tracker, "final_emissions_data", None)
+    emissions_data = {
+        "energy_kwh":     d.energy_consumed if d else None,
+    }
+    
+    # Save emissions data to PUE_RESULTS.JSON
+    pue_results_file = RESULTS_DIR / "PUE_RESULTS.JSON"
+    with open(pue_results_file, 'w') as f:
+        json.dump(emissions_data, f, indent=2)
 
 if __name__ == "__main__":
     run()

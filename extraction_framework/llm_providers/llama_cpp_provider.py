@@ -29,7 +29,7 @@ EMISSION_FACTOR_WOR = 0.150   # World average
 
 # Power Usage Effectiveness — multiply measured IT energy by this to get total facility energy.
 # 1.0 = bare metal / home setup (no datacenter overhead). Fill in your calculated value.
-PUE_LOCAL = 1.0
+PUE_LOCAL = 1.08
 
 
 class LlamaCppProvider(BaseLLMProvider):
@@ -53,11 +53,10 @@ class LlamaCppProvider(BaseLLMProvider):
         if CODECARBON_AVAILABLE:
             tracker = EmissionsTracker(
                 project_name="local_inference",
-                measure_power_secs=0.1,
+                measure_power_secs=0.5,
                 save_to_file=False,
-                logging_logger=logger,
-                force_ram_power=20,  # 4 slots x 5W
                 pue=PUE_LOCAL,
+		log_level="warning"
             )
             tracker.start()
 
@@ -72,6 +71,7 @@ class LlamaCppProvider(BaseLLMProvider):
                     "messages": messages,
                     "temperature": 0,
                     "stream": False,
+		    "max_tokens": 1024,
                     "response_format": {
                         "type": "json_schema",
                         "json_schema": {

@@ -74,7 +74,6 @@ class LocalServerManager:
             cmd,
             env=server_env, # <--- Add this
             stdout=subprocess.DEVNULL,
-            verbose=True,
             stderr=None if self._verbose else subprocess.PIPE,
         )
         self._wait_for_health(startup_timeout)
