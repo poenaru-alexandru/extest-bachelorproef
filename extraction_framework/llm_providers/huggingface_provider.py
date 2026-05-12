@@ -157,10 +157,31 @@ class HuggingFaceProvider(BaseLLMProvider):
         
         # EcoLogits usage.energy already includes the datacenter PUE factor internally
         # (compute: datacenter_pue × (server_energy + gpu_energy)).
-        # There is no way to retrieve the pre-PUE raw value from EcoLogits, so both
-        # raw_energy_kwh and energy_kwh_with_pue are set to the same EcoLogits value.
-        # The distinction is meaningful only for local (CodeCarbon) measurements.
-        ecologits_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
+        # However, EcoLogits only models OUTPUT tokens (decode phase). The prefill phase
+        # (input token processing) is absent from its formula: E = N_out × e_token.
+        # For extraction tasks with long prompts and short outputs this is a severe underestimate.
+        #
+        # Correction: Caravaca et al. (arXiv:2511.05597) empirically measure on H100 and other
+        # GPU types that input tokens cost ~4× less energy per token than output tokens (α = 0.25).
+        # The architectural reason is that prefill is compute-bound (parallel) while decode is
+        # memory-bandwidth-bound (sequential) — Patel et al., ISCA 2024 (arXiv:2311.18677).
+        #
+        # Corrected formula: E_cor = κ × E_raw, with κ = (N_out + α × N_in) / N_out
+        # raw_energy_kwh  → uncorrected EcoLogits value (output tokens only), kept for transparency
+        # energy_kwh_with_pue → prefill-corrected value, used for local↔cloud comparison
+        PREFILL_ENERGY_FACTOR = 0.25  # α from Caravaca et al. (arXiv:2511.05597)
+
+        ecologits_raw_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
+        ecologits_raw_co2_kg = final_impacts.get("co2_kg") if final_impacts else None
+
+        if ecologits_raw_energy_kwh is not None and output_tokens > 0:
+            prefill_correction = (output_tokens + PREFILL_ENERGY_FACTOR * input_tokens) / output_tokens
+            ecologits_energy_kwh = ecologits_raw_energy_kwh * prefill_correction
+            ecologits_co2_kg = ecologits_raw_co2_kg * prefill_correction if ecologits_raw_co2_kg else None
+        else:
+            prefill_correction = None
+            ecologits_energy_kwh = ecologits_raw_energy_kwh
+            ecologits_co2_kg = ecologits_raw_co2_kg
 
         regional_emissions = {}
         if ecologits_energy_kwh is not None:
@@ -182,9 +203,10 @@ class HuggingFaceProvider(BaseLLMProvider):
             'input': input_tokens,
             'output': output_tokens,
             'total': input_tokens + output_tokens,
-            'raw_energy_kwh': ecologits_energy_kwh,       # EcoLogits already embeds PUE
-            'energy_kwh_with_pue': ecologits_energy_kwh,  # same: no additional factor needed
-            'co2_kg': final_impacts.get("co2_kg") if final_impacts else None,
+            'raw_energy_kwh': ecologits_raw_energy_kwh,    # EcoLogits output-tokens-only (no prefill)
+            'energy_kwh_with_pue': ecologits_energy_kwh,   # Prefill-corrected; PUE already embedded
+            'co2_kg': ecologits_co2_kg,
+            'ecologits_prefill_correction': prefill_correction,
             'energy_source': 'ecologits' if final_impacts else None,
             'ecologits_impacts': final_impacts,
             'regional_cloud_projections': regional_emissions if regional_emissions else None,

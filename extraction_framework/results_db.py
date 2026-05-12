@@ -30,8 +30,10 @@ CREATE TABLE IF NOT EXISTS extraction_results (
     gpu_energy_kwh          REAL,
     ram_energy_kwh          REAL,
     energy_source                TEXT,
+    ecologits_prefill_correction REAL,
     regional_cloud_projections   TEXT,
     validation_score             REAL,
+    ground_truth_score           REAL,
     extracted_data               TEXT,
     timestamp                    TEXT
 )
@@ -61,6 +63,10 @@ class ResultsDB:
             conn.execute("ALTER TABLE extraction_results ADD COLUMN raw_energy_kwh REAL")
         if "energy_kwh_with_pue" not in existing:
             conn.execute("ALTER TABLE extraction_results ADD COLUMN energy_kwh_with_pue REAL")
+        if "ecologits_prefill_correction" not in existing:
+            conn.execute("ALTER TABLE extraction_results ADD COLUMN ecologits_prefill_correction REAL")
+        if "ground_truth_score" not in existing:
+            conn.execute("ALTER TABLE extraction_results ADD COLUMN ground_truth_score REAL")
         # Backfill legacy rows: energy_kwh (old column) → raw_energy_kwh if present
         if "energy_kwh" in existing and "raw_energy_kwh" in existing:
             conn.execute(
@@ -86,8 +92,8 @@ class ResultsDB:
                     input_tokens, output_tokens, total_tokens,
                     raw_energy_kwh, energy_kwh_with_pue, co2_kg,
                     cpu_energy_kwh, gpu_energy_kwh, ram_energy_kwh,
-                    energy_source, regional_cloud_projections,
-                    validation_score, extracted_data, timestamp
+                    energy_source, ecologits_prefill_correction, regional_cloud_projections,
+                    validation_score, ground_truth_score, extracted_data, timestamp
                 ) VALUES (
                     ?, ?, ?, ?,
                     ?, ?,
@@ -97,8 +103,8 @@ class ResultsDB:
                     ?, ?, ?,
                     ?, ?, ?,
                     ?, ?, ?,
-                    ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?,
+                    ?, ?, ?, ?
                 )
                 """,
                 (
@@ -123,8 +129,10 @@ class ResultsDB:
                     result.gpu_energy_kwh,
                     result.ram_energy_kwh,
                     result.energy_source,
+                    result.ecologits_prefill_correction,
                     json.dumps(result.regional_cloud_projections) if result.regional_cloud_projections else None,
                     result.validation_score,
+                    result.ground_truth_score,
                     json.dumps(result.extracted_data) if result.extracted_data else None,
                     result.timestamp,
                 ),

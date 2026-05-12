@@ -303,6 +303,7 @@ class BenchmarkRunner:
                 gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
                 ram_energy_kwh=token_usage.get('ram_energy_kwh'),
                 energy_source=token_usage.get('energy_source'),
+                ecologits_prefill_correction=token_usage.get('ecologits_prefill_correction'),
                 regional_cloud_projections=token_usage.get('regional_cloud_projections'),
             )
 
@@ -335,6 +336,7 @@ class BenchmarkRunner:
                 gpu_energy_kwh=token_usage.get('gpu_energy_kwh'),
                 ram_energy_kwh=token_usage.get('ram_energy_kwh'),
                 energy_source=token_usage.get('energy_source'),
+                ecologits_prefill_correction=token_usage.get('ecologits_prefill_correction'),
                 regional_cloud_projections=token_usage.get('regional_cloud_projections'),
             )
 

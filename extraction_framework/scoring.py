@@ -38,13 +38,18 @@ class ExtractionResult(BaseModel):
     # Quality Score (rule-based structural validation, 0–100)
     validation_score: Optional[float] = None
 
+    # Ground-truth accuracy score (0–100): compares extracted periodes[0] fields
+    # against the known-correct values from ground_truth_expected_fields_full.json
+    ground_truth_score: Optional[float] = None
+
     # Sustainability Metrics
-    # raw_energy_kwh: bare IT energy before PUE correction
-    #   local  → CodeCarbon sum(GPU+CPU+RAM), pue NOT passed to tracker
-    #   cloud  → EcoLogits usage.energy (already includes datacenter PUE; raw not separately available)
-    # energy_kwh_with_pue: facility-level energy used for fair local↔cloud comparison
+    # raw_energy_kwh: uncorrected energy
+    #   local  → CodeCarbon sum(GPU+CPU+RAM), PUE not yet applied
+    #   cloud  → EcoLogits output-tokens-only estimate (prefill absent)
+    # energy_kwh_with_pue: value used for fair local↔cloud comparison
     #   local  → raw_energy_kwh × PUE_LOCAL (1.08)
-    #   cloud  → same as raw_energy_kwh (EcoLogits already embeds PUE)
+    #   cloud  → EcoLogits estimate corrected for prefill (α=0.25, Caravaca et al. arXiv:2511.05597)
+    # ecologits_prefill_correction: κ = (N_out + 0.25·N_in) / N_out applied to cloud energy; None for local
     raw_energy_kwh: Optional[float] = None
     energy_kwh_with_pue: Optional[float] = None
     co2_kg: Optional[float] = None
@@ -52,6 +57,7 @@ class ExtractionResult(BaseModel):
     gpu_energy_kwh: Optional[float] = None
     ram_energy_kwh: Optional[float] = None
     energy_source: Optional[str] = None  # 'codecarbon' or 'ecologits'
+    ecologits_prefill_correction: Optional[float] = None
     regional_cloud_projections: Optional[Dict[str, float]] = None
 
 
@@ -161,6 +167,91 @@ class ResultScorer:
                             if val is None or isinstance(val, str):
                                 score += 5.0
         
+        return score
+
+    @staticmethod
+    def _parse_date(value) -> Optional[str]:
+        """Normalize a date string to ISO YYYY-MM-DD; returns None if unparseable."""
+        if value is None:
+            return None
+        s = str(value).strip()
+        import re
+        # ISO: YYYY-MM-DD
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+            return s
+        # DD/MM/YYYY
+        m = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+        if m:
+            return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+        # DD.MM.YYYY
+        m = re.fullmatch(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", s)
+        if m:
+            return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+        return None
+
+    def score_against_ground_truth(
+        self,
+        extracted_data: Optional[Dict[str, Any]],
+        expected_fields: Dict[str, Any],
+    ) -> float:
+        """
+        Compare extracted periodes[0] against known-correct values.
+
+        Scoring (25 pts per field = 100 total):
+        - supplier: exact match after strip/lower (null == null counts as correct)
+        - start_date / end_date: match after date-format normalisation
+        - kwh_quantity: within 0.5 % relative tolerance or 0.01 kWh absolute
+
+        Returns NaN when extracted_data is None (extraction failed / no data).
+        """
+        import math
+        if extracted_data is None:
+            return float("nan")
+        if not isinstance(extracted_data, dict):
+            return 0.0
+
+        periodes = extracted_data.get("periodes")
+        if not isinstance(periodes, list) or len(periodes) == 0:
+            return 0.0
+
+        first = periodes[0]
+        if not isinstance(first, dict):
+            return 0.0
+
+        score = 0.0
+
+        # supplier
+        exp_s = expected_fields.get("supplier")
+        got_s = first.get("supplier")
+        if exp_s is None and got_s is None:
+            score += 25.0
+        elif exp_s is not None and got_s is not None:
+            if str(exp_s).strip().lower() == str(got_s).strip().lower():
+                score += 25.0
+
+        # start_date
+        if self._parse_date(first.get("start_date")) == self._parse_date(expected_fields.get("start_date")):
+            score += 25.0
+
+        # end_date
+        if self._parse_date(first.get("end_date")) == self._parse_date(expected_fields.get("end_date")):
+            score += 25.0
+
+        # kwh_quantity
+        exp_kwh = expected_fields.get("kwh_quantity")
+        got_kwh = first.get("kwh_quantity")
+        if exp_kwh is not None and got_kwh is not None:
+            try:
+                exp_f = float(exp_kwh)
+                got_f = float(got_kwh)
+                tol = max(0.01, 0.005 * abs(exp_f))
+                if abs(got_f - exp_f) <= tol:
+                    score += 25.0
+            except (TypeError, ValueError):
+                pass
+        elif exp_kwh is None and got_kwh is None:
+            score += 25.0
+
         return score
 
     def compare_results(
