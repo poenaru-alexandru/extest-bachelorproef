@@ -1,9 +1,10 @@
 """
-Retroactief de EcoLogits prefill-correctie (α=0.25) toepassen op bestaande resultaten.
+Retroactief de EcoLogits prefill-correctie (α=0.175) toepassen op bestaande resultaten.
 
 Reden: EcoLogits modelleerde enkel outputtokens. Caravaca et al. (arXiv:2511.05597)
-tonen empirisch aan dat inputtokens ~4× minder energie kosten dan outputtokens.
-Formule: E_cor = κ × E_raw, met κ = (N_out + 0.25 × N_in) / N_out
+tonen empirisch aan dat inputtokens minder energie kosten dan outputtokens. Uit hun
+scenariovergelijking (9× meer inputtokens → 2,19× meer energie) volgt α ≈ 0,175.
+Formule: E_cor = κ × E_raw, met κ = (N_out + 0.175 × N_in) / N_out
 
 Wat dit script doet:
   - Voegt kolom ecologits_prefill_correction toe aan de DB (indien nog niet aanwezig)
@@ -25,7 +26,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-PREFILL_ENERGY_FACTOR = 0.25  # α uit Caravaca et al. (arXiv:2511.05597)
+PREFILL_ENERGY_FACTOR = 0.175  # α afgeleid uit Caravaca et al. (arXiv:2511.05597): 9× meer input → 2,19× meer energie
 
 EMISSION_FACTORS = {
     "ITA": 0.28478,
@@ -58,7 +59,7 @@ def migrate(db_path: Path) -> None:
         WHERE llm_provider = 'huggingface'
           AND raw_energy_kwh IS NOT NULL
           AND output_tokens > 0
-          AND ecologits_prefill_correction IS NULL
+          AND raw_energy_kwh IS NOT NULL
     """).fetchall()
 
     if not rows:

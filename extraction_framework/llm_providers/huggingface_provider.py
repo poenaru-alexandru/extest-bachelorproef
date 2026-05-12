@@ -161,15 +161,16 @@ class HuggingFaceProvider(BaseLLMProvider):
         # (input token processing) is absent from its formula: E = N_out × e_token.
         # For extraction tasks with long prompts and short outputs this is a severe underestimate.
         #
-        # Correction: Caravaca et al. (arXiv:2511.05597) empirically measure on H100 and other
-        # GPU types that input tokens cost ~4× less energy per token than output tokens (α = 0.25).
-        # The architectural reason is that prefill is compute-bound (parallel) while decode is
-        # memory-bandwidth-bound (sequential) — Patel et al., ISCA 2024 (arXiv:2311.18677).
+        # Correction: Caravaca et al. (arXiv:2511.05597) measure total GPU energy and show that
+        # 9× more input tokens yields only 2.19× more total energy on average, from which
+        # α = (2.19-1)/(9-1) × (100+100)/(100) ≈ 0.175 (input token costs ~5.7× less per token
+        # than an output token). The architectural reason is that prefill is compute-bound
+        # (parallel GEMM) while decode is memory-bandwidth-bound (sequential GEMV).
         #
         # Corrected formula: E_cor = κ × E_raw, with κ = (N_out + α × N_in) / N_out
         # raw_energy_kwh  → uncorrected EcoLogits value (output tokens only), kept for transparency
-        # energy_kwh_with_pue → prefill-corrected value, used for local↔cloud comparison
-        PREFILL_ENERGY_FACTOR = 0.25  # α from Caravaca et al. (arXiv:2511.05597)
+        # energy_kwh_with_pue → prefill-corrected upper bound, used for local↔cloud comparison
+        PREFILL_ENERGY_FACTOR = 0.175  # α derived from Caravaca et al. (arXiv:2511.05597)
 
         ecologits_raw_energy_kwh = final_impacts["energy_kwh"] if final_impacts else None
         ecologits_raw_co2_kg = final_impacts.get("co2_kg") if final_impacts else None

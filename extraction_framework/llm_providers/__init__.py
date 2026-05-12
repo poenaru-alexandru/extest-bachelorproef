@@ -112,7 +112,7 @@ def resolve_local_model_path(model_name: str) -> str:
 
     Models are expected at <repo_root>/local_models/<model_name>.gguf
     """
-    base_dir = Path(__file__).parent.parent.parent.parent  # → BP/
+    base_dir = Path(__file__).parent.parent.parent  # → repo root
     model_file = model_name if model_name.endswith(".gguf") else f"{model_name}.gguf"
     return str(base_dir / "local_models" / model_file)
 
