@@ -23,3 +23,4 @@ codecarbon
 ecologits
 
 colorama
+tiktoken

@@ -18,7 +18,7 @@ from extraction_framework.benchmark_runner import BenchmarkRunner
 from extraction_framework.run_benchmark import run
 
 # ── CONFIGURE HERE ────────────────────────────────────────────────────────────
-DEFAULT_N_RUNS = 30
+DEFAULT_N_RUNS = 37
 # ──────────────────────────────────────────────────────────────────────────────
 
 
