@@ -1,5 +1,9 @@
 # Document Extraction Tester — Bachelorproef PoC
 
+## What is this repository?
+
+This repository contains a bachelor-thesis proof of concept for benchmarking LLM-based extraction of structured data from PDF documents, with a focus on Italian utility bills. It includes a Python extraction framework, a Flask web UI, and benchmarking/scoring tooling to compare local and cloud models on extraction accuracy, inference speed, token usage, and energy/CO₂ impact.
+
 Framework voor het vergelijken van lokale en cloud-gebaseerde LLM-strategieën voor het extraheren van gestructureerde data uit PDF-documenten (Italiaanse nutsrekeningen). Meet extractienauwkeurigheid, inferentiesnelheid, tokengebruik en energieverbruik (kWh/CO₂).
 
 ---
